@@ -104,7 +104,7 @@ export class Sim {
       for (let y = 0; y < ny; y++) {
         for (let x = 0; x < nx; x++) {
           const i = this.idx(x, y, z);
-          const phi = y > waterlineY ? 1.0 : 0.0;  // +y is down; bottom = liquid
+          const phi = y > waterlineY ? 1.0 : 0.0;
           this.phi[i]     = phi;
           this.phiPrev[i] = phi;
           this.rho[i]     = 1.0;
@@ -114,8 +114,36 @@ export class Sim {
                          z === 0 || z === nz - 1;
           this.tag[i] = onWall ? TAG_WALL : TAG_FLUID;
           this.tagPrev[i] = this.tag[i];
-          for (let k = 0; k < Q27; k++) this.f[i * Q27 + k] = W27[k] * 1.0;
-          for (let k = 0; k < Q7;  k++) this.h[i * Q7  + k] = W7[k]  * phi;
+          for (let k = 0; k < Q27; k++) this.f[i * Q27 + k] = W27[k];
+          for (let k = 0; k < Q7;  k++) this.h[i * Q7  + k] = W7[k] * phi;
+        }
+      }
+    }
+    this.seedHydrostatic();
+  }
+
+  // Sets rho_LBM and the hydro distributions to satisfy the LBM
+  // hydrostatic equation with the current phi field:
+  //     d rho_LBM / d y = (rho_phase(y) - rho_ref) * g / cs^2
+  // Integrates upward from y=0 in each (x,z) column. Without this, the
+  // gravity transient creates standing pressure waves that the
+  // low-viscosity BGK relaxation never damps; with this seed the system
+  // starts near equilibrium and the simulation stays stable for the
+  // buoyancy and dam-break scenes.
+  seedHydrostatic() {
+    const { nx, ny, nz, phi, rho, f } = this;
+    const rhoRef = 0.5 * (this.rhoL + this.rhoG);
+    const gOverCs2 = this.gravity * INV_CS2_27;
+    for (let z = 0; z < nz; z++) {
+      for (let x = 0; x < nx; x++) {
+        let r = 1.0;
+        for (let y = 0; y < ny; y++) {
+          const i = this.idx(x, y, z);
+          rho[i] = r;
+          const i27 = i * Q27;
+          for (let k = 0; k < Q27; k++) f[i27 + k] = W27[k] * r;
+          const rhoPhi = this.rhoG + phi[i] * (this.rhoL - this.rhoG);
+          r += (rhoPhi - rhoRef) * gOverCs2;
         }
       }
     }
@@ -467,9 +495,21 @@ export class Sim {
           const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
           const fz = bodyFz[i] + mu * gz[i];
           const invR = 1 / rNew;
-          ux[i] = (mx + 0.5 * fx) * invR;
-          uy[i] = (my + 0.5 * fy) * invR;
-          uz[i] = (mz + 0.5 * fz) * invR;
+          let uxn = (mx + 0.5 * fx) * invR;
+          let uyn = (my + 0.5 * fy) * invR;
+          let uzn = (mz + 0.5 * fz) * invR;
+
+          // Mach-limit safety clamp: BGK LBM is unconditionally unstable
+          // for |u| >~ 0.3 cs. We rescale rather than letting the macros
+          // blow up; in practice this only ever fires for a handful of
+          // cells right next to the moving solid during transients.
+          const u2 = uxn * uxn + uyn * uyn + uzn * uzn;
+          const UMAX = 0.18, UMAX2 = UMAX * UMAX;
+          if (u2 > UMAX2) {
+            const s = UMAX / Math.sqrt(u2);
+            uxn *= s; uyn *= s; uzn *= s;
+          }
+          ux[i] = uxn; uy[i] = uyn; uz[i] = uzn;
         }
       }
     }

@@ -3,7 +3,7 @@ import { Sim } from '../src/sim.js';
 
 const sim = new Sim(8, 12, 8);
 sim.initFlat(6);
-sim.tau = 0.6;
+sim.tau = 0.7;
 sim.tauPhi = 0.7;
 sim.sigma = 0.012;
 sim.gravity = 0.0012;

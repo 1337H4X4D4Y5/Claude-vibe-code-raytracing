@@ -4,7 +4,7 @@ import { RigidSphere } from '../src/solid.js';
 
 const sim = new Sim(40, 28, 40);
 sim.initFlat(14);
-sim.tau = 0.55; sim.tauPhi = 0.7; sim.sigma = 0.012;
+sim.tau = 0.7; sim.tauPhi = 0.7; sim.sigma = 0.012;
 sim.gravity = 0.00135; sim.rhoL = 1.0; sim.rhoG = 0.1; sim.W = 4.0;
 const solid = new RigidSphere(40, 28, 40, { cx: 20, cy: 6, cz: 20, r: 4, density: 1.6 });
 

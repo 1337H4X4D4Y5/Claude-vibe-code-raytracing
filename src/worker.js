@@ -22,7 +22,10 @@ function getBuffer() {
 
 function initSim() {
   sim = new Sim(NX, NY, NZ);
-  sim.tau     = 0.55;
+  // tau ~ 0.7 gives enough viscosity to damp gravity-induced sound
+  // waves at this grid resolution; at tau=0.55 the buoyant-rise and
+  // dam-break scenes oscillated until the LBM Mach limit blew up.
+  sim.tau     = 0.7;
   sim.tauPhi  = 0.7;
   sim.sigma   = 0.012;
   sim.gravity = 0.00135;
@@ -61,6 +64,10 @@ function resetTo(name) {
           }
         }
       }
+      // Re-seed the hydrostatic LBM density now that phi reflects the
+      // dam column. Without this the water column would start at uniform
+      // rho_LBM=1.0 and ring like a struck bell.
+      sim.seedHydrostatic();
       solid.cx = NX * 0.7; solid.cy = NY * 0.6; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
@@ -70,11 +77,14 @@ function resetTo(name) {
     }
     case 'rise':
       sim.initFlat(NY * 0.25);
-      solid.cx = NX * 0.5; solid.cy = NY * 0.85; solid.cz = NZ * 0.5;
+      // Place the sphere deep but with room above and below it -- starting
+      // pinned against the bottom wall created a gravity-trapped pressure
+      // pocket that fed back into the body and blew up the LBM.
+      solid.cx = NX * 0.5; solid.cy = NY * 0.70; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
       solid.setRadius(4.0);
-      solid.setDensity(0.4);
+      solid.setDensity(0.5);
       break;
   }
 }
