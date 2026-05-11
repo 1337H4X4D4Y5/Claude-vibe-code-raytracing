@@ -56,32 +56,38 @@ float intersectSphere(vec3 ro, vec3 rd, vec3 c, float r) {
 }
 
 vec3 skyColor(vec3 rd) {
-  // Soft gradient + sun. y axis = up in our view (camera up was set to
-  // (0,-1,0) so that LBM +y is screen-down -- in world space "above the
-  // tank" is rd.y < 0).
+  // Up in world = -y (we set camera up = (0,-1,0)). Looking up gives
+  // rd.y < 0 -> -rd.y > 0 -> zenith side.
   float t = clamp(-rd.y * 0.5 + 0.5, 0.0, 1.0);
-  vec3 horizon = vec3(0.18, 0.22, 0.32);
-  vec3 zenith  = vec3(0.02, 0.04, 0.10);
+  vec3 horizon = vec3(0.55, 0.60, 0.72);
+  vec3 zenith  = vec3(0.10, 0.18, 0.30);
   vec3 sky = mix(horizon, zenith, t);
   float sun = pow(max(dot(rd, -uLight), 0.0), 64.0);
-  return sky + vec3(1.0, 0.9, 0.7) * sun * 0.6;
+  return sky + vec3(1.0, 0.92, 0.72) * sun * 0.6;
 }
 
-// World coords are scaled so that the longest LBM axis maps to 1; here we
-// convert world position to volume texture coordinates ([0,1]^3).
 vec3 worldToUVW(vec3 wp) { return wp / uBoxMax; }
-
-float samplePhi(vec3 wp) {
-  return texture(uVol, worldToUVW(wp)).r;
-}
+float samplePhi(vec3 wp) { return texture(uVol, worldToUVW(wp)).r; }
 
 vec3 gradPhi(vec3 wp) {
-  vec3 e = uBoxMax * uGridInv;     // one cell in world units
-  vec3 g;
-  g.x = samplePhi(wp + vec3(e.x, 0, 0)) - samplePhi(wp - vec3(e.x, 0, 0));
-  g.y = samplePhi(wp + vec3(0, e.y, 0)) - samplePhi(wp - vec3(0, e.y, 0));
-  g.z = samplePhi(wp + vec3(0, 0, e.z)) - samplePhi(wp - vec3(0, 0, e.z));
-  return g;
+  vec3 e = uBoxMax * uGridInv;
+  return vec3(
+    samplePhi(wp + vec3(e.x, 0.0, 0.0)) - samplePhi(wp - vec3(e.x, 0.0, 0.0)),
+    samplePhi(wp + vec3(0.0, e.y, 0.0)) - samplePhi(wp - vec3(0.0, e.y, 0.0)),
+    samplePhi(wp + vec3(0.0, 0.0, e.z)) - samplePhi(wp - vec3(0.0, 0.0, e.z))
+  );
+}
+
+vec3 shadeSphere(vec3 wp, vec3 rd) {
+  vec3 n = normalize(wp - uSphereC);
+  float lambert = max(dot(n, -uLight), 0.0);
+  vec3 base = vec3(0.95, 0.78, 0.35);
+  vec3 col = base * (0.20 + 0.85 * lambert);
+  vec3 h = normalize(-uLight - rd);
+  col += vec3(1.0) * pow(max(dot(h, n), 0.0), 48.0) * 0.55;
+  float rim = pow(1.0 - max(dot(-rd, n), 0.0), 3.0);
+  col += vec3(1.0, 0.85, 0.6) * rim * 0.18;
+  return col;
 }
 
 void main() {
@@ -93,105 +99,94 @@ void main() {
   vec3 rd = normalize(wFar - wNear);
   vec3 ro = uCamPos;
 
-  // Tank bounds: rectangular box matching the grid's aspect ratio.
+  // Tank intersection.
   vec2 tt = intersectAABB(ro, rd, vec3(0.0), uBoxMax);
   float tEnter = max(tt.x, 0.0);
   float tExit  = tt.y;
   if (tExit < tEnter) {
-    fragColor = vec4(skyColor(rd), 1.0);
+    vec3 bg = skyColor(rd);
+    bg = bg / (bg + vec3(1.0));
+    bg = pow(bg, vec3(1.0 / 2.2));
+    fragColor = vec4(bg, 1.0);
     return;
   }
 
-  // Analytical sphere intersection -- gives crisp silhouette even when
-  // we under-sample the volume.
-  float tSphere = intersectSphere(ro, rd, uSphereC, uSphereR);
+  // Sphere (analytical, inside the cube only).
+  float tSphereRaw = intersectSphere(ro, rd, uSphereC, uSphereR);
+  float tSphere = (tSphereRaw > 0.0 && tSphereRaw > tEnter && tSphereRaw < tExit)
+                  ? tSphereRaw : -1.0;
+  float tEnd = (tSphere > 0.0) ? tSphere : tExit;
 
-  // March.
-  const int STEPS = 128;
-  float tMaxVol = tExit;
-  if (tSphere > 0.0 && tSphere < tMaxVol) tMaxVol = tSphere;
-  float dt = (tMaxVol - tEnter) / float(STEPS);
+  // Sample phi a touch inside the cube to decide the starting medium
+  // (sampling exactly on a wall picks up the wall cell's seeded phi).
+  float epsT = 0.002 * (tEnd - tEnter);
+  float prevT = tEnter + epsT;
+  float prevPhi = samplePhi(ro + prevT * rd);
+  bool startInWater = prevPhi > 0.5;
 
-  vec3 col = vec3(0.0);
-  float alpha = 0.0;
-  vec3 hitNormal = vec3(0.0);
-  float hitDepth = -1.0;
-  vec3 hitPos = vec3(0.0);
-  vec3 hitPhi = vec3(0.0);
-  float surfaceAlpha = 0.0;
-
-  // Jitter to break banding.
+  // March looking for the first phi = 0.5 crossing. We deliberately do
+  // *only* surface detection here -- volume haze is what made the water
+  // look cloudy. Once we know where the interface is, Beer-Lambert over
+  // the actual underwater path length gives a sharp layered look.
+  const int STEPS = 48;
+  float dt = (tEnd - prevT) / float(STEPS);
   float jit = fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453);
 
-  vec3 waterTint = vec3(0.18, 0.55, 0.78);
-  float absorb = 2.6;  // Beer's law coefficient
-
+  float tSurface = -1.0;
   for (int i = 0; i < STEPS; i++) {
-    float t = tEnter + (float(i) + jit) * dt;
-    if (t > tMaxVol) break;
-    vec3 wp = ro + t * rd;
-    // Sample.
-    float phi = samplePhi(wp);
-
-    // Surface detection: cross 0.5 from below.
-    if (phi > 0.5 && alpha < 0.001 && hitDepth < 0.0) {
-      hitDepth = t;
-      hitPos = wp;
-      hitNormal = -normalize(gradPhi(wp) + vec3(1e-6));
+    float t = prevT + (float(i) + 0.5 + jit) * dt;
+    if (t > tEnd) break;
+    float phi = samplePhi(ro + t * rd);
+    bool nowInWater = phi > 0.5;
+    if (nowInWater != startInWater) {
+      // Linear-interp refinement of the 0.5 crossing between (prevT,
+      // prevPhi) and (t, phi).
+      float u = (0.5 - prevPhi) / (phi - prevPhi);
+      tSurface = prevT + u * (t - prevT);
+      break;
     }
-
-    // Accumulate liquid extinction inside the bulk.
-    if (phi > 0.05) {
-      float density = phi * absorb * dt;
-      float trans = exp(-density);
-      col += (1.0 - alpha) * (1.0 - trans) * waterTint * 0.35;
-      alpha += (1.0 - alpha) * (1.0 - trans);
-    }
-
-    if (alpha > 0.985) break;
+    prevT = t;
+    prevPhi = phi;
   }
 
-  // If we hit the surface, shade it like a glossy water surface with
-  // Fresnel + reflected sky and refracted murk.
-  if (hitDepth > 0.0) {
-    vec3 n = hitNormal;
+  // Backdrop colour at tEnd: shaded sphere or sky beyond the back wall.
+  vec3 backColor;
+  if (tSphere > 0.0) {
+    backColor = shadeSphere(ro + tSphere * rd, rd);
+  } else {
+    backColor = skyColor(rd);
+  }
+
+  // Underwater path length: distance the ray travels through phi > 0.5.
+  float waterDist = 0.0;
+  if (tSurface > 0.0) {
+    waterDist = startInWater ? (tSurface - tEnter) : (tEnd - tSurface);
+  } else if (startInWater) {
+    waterDist = tEnd - tEnter;
+  }
+
+  // Beer-Lambert tint: red absorbs fastest, so deep water shifts toward
+  // a deep teal. Coefficient scale matches the world-space dimensions
+  // (uBoxMax has unit longest axis).
+  vec3 absorbCoef = vec3(3.2, 1.4, 0.8);
+  vec3 trans = exp(-absorbCoef * waterDist);
+  vec3 waterColor = vec3(0.05, 0.20, 0.32);
+  vec3 col = trans * backColor + (1.0 - trans) * waterColor;
+
+  // Fresnel-mixed reflection at the surface, plus a specular highlight.
+  if (tSurface > 0.0) {
+    vec3 wpSurf = ro + tSurface * rd;
+    vec3 g = gradPhi(wpSurf);
+    vec3 n = -normalize(g + vec3(1e-6));
     if (dot(n, rd) > 0.0) n = -n;
     float fres = pow(1.0 - max(dot(-rd, n), 0.0), 4.0);
-    vec3 reflDir = reflect(rd, n);
-    vec3 refrDir = refract(rd, n, 1.0 / 1.33);
-    vec3 reflCol = skyColor(reflDir);
-    float lambert = max(dot(n, -uLight), 0.0);
-    vec3 deep = mix(waterTint * 0.4, waterTint * 0.9, lambert);
-    vec3 surfCol = mix(deep, reflCol, fres * 0.85 + 0.15);
-    // Specular highlight.
+    vec3 reflCol = skyColor(reflect(rd, n));
+    col = mix(col, reflCol, fres * 0.7 + 0.04);
     vec3 h = normalize(-uLight + -rd);
-    float spec = pow(max(dot(h, n), 0.0), 96.0);
-    surfCol += vec3(1.0) * spec * 0.5;
-    col = mix(surfCol, col, alpha * 0.4);
-    alpha = max(alpha, 0.85);
+    col += vec3(1.0) * pow(max(dot(h, n), 0.0), 96.0) * 0.45;
   }
 
-  // Solid sphere.
-  if (tSphere > 0.0 && tSphere <= tExit) {
-    vec3 sp = ro + tSphere * rd;
-    vec3 n = normalize(sp - uSphereC);
-    float lambert = max(dot(n, -uLight), 0.0);
-    float rim = pow(1.0 - max(dot(-rd, n), 0.0), 3.0);
-    vec3 base = vec3(0.95, 0.78, 0.35);
-    vec3 sCol = base * (0.18 + 0.85 * lambert) + vec3(1.0, 0.85, 0.6) * rim * 0.3;
-    // Specular.
-    vec3 h = normalize(-uLight - rd);
-    sCol += vec3(1.0) * pow(max(dot(h, n), 0.0), 32.0) * 0.6;
-    col = col + (1.0 - alpha) * sCol;
-    alpha = 1.0;
-  }
-
-  // Background.
-  if (alpha < 1.0) {
-    col += (1.0 - alpha) * skyColor(rd);
-  }
-
-  // Gentle tonemap.
+  // Tonemap + gamma.
   col = col / (col + vec3(1.0));
   col = pow(col, vec3(1.0 / 2.2));
   fragColor = vec4(col, 1.0);
