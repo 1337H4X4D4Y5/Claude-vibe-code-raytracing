@@ -270,14 +270,23 @@ export class Sim {
   // -------------------------------------------------------- phase collide
   // Allen-Cahn LBM (Liang-style). Equilibrium:
   //   h_i^eq = w_i phi (1 + e_i.u / cs^2)
-  // Forcing term (interface sharpening):
-  //   F_i = w_i (e_i . [4 phi (1-phi)/W * n_hat]) / cs^2
+  // Forcing term (interface sharpening). The macroscopic equation we
+  // want is
+  //   dt phi + div(phi u) = M_phi * lap(phi) - M_phi * div(4 phi(1-phi)/W n_hat)
+  // For a Guo-style forcing to recover the second divergence the source
+  // term's first moment must be  M_phi * 4 phi(1-phi)/W * n_hat, with an
+  // additional (1 - 1/(2 tau_phi)) half-correction so the trapezoidal
+  // streaming step doesn't double-count it. Previously I had neither
+  // factor, so the anti-diffusion was ~60x too strong and the interface
+  // fingered into nonphysical spikes.
   collidePhase() {
     const { nx, ny, nz, h, h2, phi, ux, uy, uz, tag,
             gx, gy, gz, W, tauPhi } = this;
     const invTau = 1 / tauPhi;
     const nxny = nx * ny;
-    const sharpC = 4.0 / W;
+    const Mphi = CS2_7 * (tauPhi - 0.5);
+    const guoHalf = 1.0 - 0.5 * invTau;
+    const sharpC = 4.0 * Mphi * guoHalf / W;
     const sharpFac = INV_CS2_7;
 
     for (let z = 1; z < nz - 1; z++) {
