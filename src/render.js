@@ -374,11 +374,17 @@ export class Renderer {
 
   uploadVolume(sim, solid) {
     sim.packVolume(this.volBuf, (x, y, z) => solid && solid.contains(x, y, z));
+    this.uploadVolumeRaw(this.volBuf);
+  }
+
+  // For the worker pipeline: caller hands us a packed Uint8Array of size
+  // nx*ny*nz*2 (R=phi*255, G=solid mask) and we upload directly.
+  uploadVolumeRaw(buf) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_3D, this.tex);
     gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0,
                      this.nx, this.ny, this.nz,
-                     gl.RG, gl.UNSIGNED_BYTE, this.volBuf);
+                     gl.RG, gl.UNSIGNED_BYTE, buf);
   }
 
   resize() {

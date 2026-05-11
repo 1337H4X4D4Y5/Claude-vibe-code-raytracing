@@ -61,6 +61,27 @@ export class Sim {
     this.bodyFy = new Float32Array(n);
     this.bodyFz = new Float32Array(n);
 
+    // Precomputed lattice neighbour offsets in linear cell index:
+    //   sIdx = i + neighOffset27[k]   <=>   x' = x - EX[k], y' = y - EY[k], ...
+    //   (Negative sign because pull-scheme source is i - e_k.)
+    // We also precompute a scaled offset so the inner loop can read the
+    // distribution directly:  f2[i27 + fOffset27[k]] === f2[sIdx*Q27 + k].
+    const nxny = nx * ny;
+    this.neighOffset27 = new Int32Array(Q27);
+    this.fOffset27     = new Int32Array(Q27);
+    for (let k = 0; k < Q27; k++) {
+      const off = -(EZ27[k] * nxny + EY27[k] * nx + EX27[k]);
+      this.neighOffset27[k] = off;
+      this.fOffset27[k]     = off * Q27 + k;
+    }
+    this.neighOffset7 = new Int32Array(Q7);
+    this.hOffset7     = new Int32Array(Q7);
+    for (let k = 0; k < Q7; k++) {
+      const off = -(EZ7[k] * nxny + EY7[k] * nx + EX7[k]);
+      this.neighOffset7[k] = off;
+      this.hOffset7[k]     = off * Q7 + k;
+    }
+
     // Physics parameters (overwritten by main).
     this.tau     = 0.6;
     this.tauPhi  = 0.7;
@@ -134,22 +155,26 @@ export class Sim {
     this.collidePhase();
     this.streamPhase();
     this.collideHydro();
-    this.streamHydro(solid);
-    this.computeMacro();
+    this.streamHydroAndMacro(solid);
   }
 
   // -------------------------------------------------------- tagging
+  // Also snapshots phi into phiPrev for the next step's fresh-cell fallback.
   retagCells(solid) {
-    const { nx, ny, nz, tag, tagPrev, usx, usy, usz } = this;
+    const { nx, ny, nz, tag, tagPrev, usx, usy, usz, phi, phiPrev } = this;
     tagPrev.set(tag);
+    phiPrev.set(phi);
     const tmp = [0, 0, 0];
+    const nxny = nx * ny;
     for (let z = 0; z < nz; z++) {
+      const zOnWall = z === 0 || z === nz - 1;
+      const zBase = z * nxny;
       for (let y = 0; y < ny; y++) {
+        const yOnWall = y === 0 || y === ny - 1;
+        const yzBase = zBase + y * nx;
         for (let x = 0; x < nx; x++) {
-          const i = ((z * ny) + y) * nx + x;
-          if (x === 0 || x === nx - 1 ||
-              y === 0 || y === ny - 1 ||
-              z === 0 || z === nz - 1) {
+          const i = yzBase + x;
+          if (zOnWall || yOnWall || x === 0 || x === nx - 1) {
             tag[i] = TAG_WALL;
             usx[i] = usy[i] = usz[i] = 0;
             continue;
@@ -223,28 +248,36 @@ export class Sim {
     const { nx, ny, nz, h, h2, phi, ux, uy, uz, tag,
             gx, gy, gz, W, tauPhi } = this;
     const invTau = 1 / tauPhi;
-    for (let z = 0; z < nz; z++) {
-      for (let y = 0; y < ny; y++) {
-        for (let x = 0; x < nx; x++) {
-          const i = ((z * ny) + y) * nx + x;
-          if (tag[i] !== TAG_FLUID) {
-            for (let k = 0; k < Q7; k++) h2[i * Q7 + k] = h[i * Q7 + k];
-            continue;
-          }
+    const nxny = nx * ny;
+    const sharpC = 4.0 / W;
+    const sharpFac = INV_CS2_7;
+
+    for (let z = 1; z < nz - 1; z++) {
+      const zBase = z * nxny;
+      for (let y = 1; y < ny - 1; y++) {
+        const yzBase = zBase + y * nx;
+        for (let x = 1; x < nx - 1; x++) {
+          const i = yzBase + x;
+          if (tag[i] !== TAG_FLUID) continue;
+          const i7 = i * Q7;
+
           const p = phi[i];
           const uxi = ux[i], uyi = uy[i], uzi = uz[i];
-          const gmag = Math.hypot(gx[i], gy[i], gz[i]) + 1e-12;
-          const nx_ = gx[i] / gmag;
-          const ny_ = gy[i] / gmag;
-          const nz_ = gz[i] / gmag;
-          const sharpen = 4.0 * p * (1.0 - p) / W;
+          const ggx = gx[i], ggy = gy[i], ggz = gz[i];
+          const gmag = Math.sqrt(ggx * ggx + ggy * ggy + ggz * ggz) + 1e-12;
+          const sharpen = sharpC * p * (1 - p);
+          const Sx = sharpen * sharpFac * ggx / gmag;
+          const Sy = sharpen * sharpFac * ggy / gmag;
+          const Sz = sharpen * sharpFac * ggz / gmag;
 
           for (let k = 0; k < Q7; k++) {
-            const eu = EX7[k] * uxi + EY7[k] * uyi + EZ7[k] * uzi;
-            const heq = W7[k] * p * (1 + INV_CS2_7 * eu);
-            const en  = EX7[k] * nx_ + EY7[k] * ny_ + EZ7[k] * nz_;
-            const Fk  = W7[k] * sharpen * en * INV_CS2_7;
-            h2[i * Q7 + k] = h[i * Q7 + k] - invTau * (h[i * Q7 + k] - heq) + Fk;
+            const ekx = EX7[k], eky = EY7[k], ekz = EZ7[k];
+            const wk = W7[k];
+            const eu = ekx * uxi + eky * uyi + ekz * uzi;
+            const heq = wk * p * (1 + INV_CS2_7 * eu);
+            const Fk  = wk * (ekx * Sx + eky * Sy + ekz * Sz);
+            const hk = h[i7 + k];
+            h2[i7 + k] = hk - invTau * (hk - heq) + Fk;
           }
         }
       }
@@ -252,36 +285,32 @@ export class Sim {
   }
 
   // -------------------------------------------------------- phase stream
-  // Only fluid cells stream; walls and solids would otherwise leak phase
-  // mass into adjacent fluid (their h was seeded by initFlat). At solid/
-  // wall neighbours we bounce the distribution back into the fluid cell
-  // (zero flux for phi across the rigid surface).
+  // Pull-scheme stream of the D3Q7 phase distribution. The phi moment is
+  // NOT updated here -- we defer it to streamHydroAndMacro so that
+  // collideHydro continues to see the phi value matching the precomputed
+  // gradient/laplacian buffers (otherwise force is computed with new phi
+  // and old grad/lap, which destabilises the surface tension term when a
+  // solid impacts the interface).
+  //
+  // For each fluid cell i and direction k, the source cell is i - e_k.
+  // Wall/solid sources bounce: h_k(i, t+1) <- h2_OPP[k](i).
   streamPhase() {
-    const { nx, ny, nz, h, h2, tag } = this;
-    // Preserve non-fluid h values; only zero out fluid cells.
-    for (let i = 0; i < this.n; i++) {
-      if (tag[i] === TAG_FLUID) {
-        for (let k = 0; k < Q7; k++) h[i * Q7 + k] = 0;
-      }
-    }
-    for (let z = 0; z < nz; z++) {
-      for (let y = 0; y < ny; y++) {
-        for (let x = 0; x < nx; x++) {
-          const i = ((z * ny) + y) * nx + x;
+    const { nx, ny, nz, h, h2, tag, neighOffset7, hOffset7 } = this;
+    const nxny = nx * ny;
+
+    for (let z = 1; z < nz - 1; z++) {
+      const zBase = z * nxny;
+      for (let y = 1; y < ny - 1; y++) {
+        const yzBase = zBase + y * nx;
+        for (let x = 1; x < nx - 1; x++) {
+          const i = yzBase + x;
           if (tag[i] !== TAG_FLUID) continue;
+          const i7 = i * Q7;
           for (let k = 0; k < Q7; k++) {
-            const xn = x + EX7[k], yn = y + EY7[k], zn = z + EZ7[k];
-            const oob = xn < 0 || xn >= nx || yn < 0 || yn >= ny || zn < 0 || zn >= nz;
-            if (oob) {
-              h[i * Q7 + OPP7[k]] += h2[i * Q7 + k];
-              continue;
-            }
-            const j = ((zn * ny) + yn) * nx + xn;
-            if (tag[j] === TAG_SOLID || tag[j] === TAG_WALL) {
-              h[i * Q7 + OPP7[k]] += h2[i * Q7 + k];
-            } else {
-              h[j * Q7 + k] += h2[i * Q7 + k];
-            }
+            const sIdx = i + neighOffset7[k];
+            h[i7 + k] = (tag[sIdx] === TAG_FLUID)
+              ? h2[i7 + hOffset7[k]]
+              : h2[i7 + OPP7[k]];
           }
         }
       }
@@ -305,125 +334,131 @@ export class Sim {
     const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
+    // Guo source term constant: S_k = A * w_k * (ekF * (1 + eu/cs^2) - uF)
+    // where A = (1 - 0.5/tau) / cs^2.
+    const A = (1 - 0.5 * invTau) * INV_CS2_27;
+    const nxny = nx * ny;
 
-    for (let z = 0; z < nz; z++) {
-      for (let y = 0; y < ny; y++) {
-        for (let x = 0; x < nx; x++) {
-          const i = ((z * ny) + y) * nx + x;
-          if (tag[i] !== TAG_FLUID) {
-            for (let k = 0; k < Q27; k++) f2[i * Q27 + k] = f[i * Q27 + k];
-            continue;
-          }
+    for (let z = 1; z < nz - 1; z++) {
+      const zBase = z * nxny;
+      for (let y = 1; y < ny - 1; y++) {
+        const yzBase = zBase + y * nx;
+        for (let x = 1; x < nx - 1; x++) {
+          const i = yzBase + x;
+          if (tag[i] !== TAG_FLUID) continue;
+          const i27 = i * Q27;
+
           const r = rho[i];
           const p = phi[i];
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
           const rhoPhi = rhoG + p * (rhoL - rhoG);
-
           const fx = bodyFx[i] + mu * gx[i];
           const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
           const fz = bodyFz[i] + mu * gz[i];
 
-          const uxe = ux[i] + 0.5 * fx / r;
-          const uye = uy[i] + 0.5 * fy / r;
-          const uze = uz[i] + 0.5 * fz / r;
+          const halfR = 0.5 / r;
+          const uxe = ux[i] + fx * halfR;
+          const uye = uy[i] + fy * halfR;
+          const uze = uz[i] + fz * halfR;
           const u2  = uxe * uxe + uye * uye + uze * uze;
+          const oneMinusU2half = 1 - 1.5 * u2;
+          const uF = uxe * fx + uye * fy + uze * fz;
 
           for (let k = 0; k < Q27; k++) {
-            const eu = EX27[k] * uxe + EY27[k] * uye + EZ27[k] * uze;
-            const feq = W27[k] * r * (1 + INV_CS2_27 * eu
-                                        + INV_2CS4_27 * eu * eu
-                                        - 1.5 * u2);
-            const tx = INV_CS2_27 * (EX27[k] - uxe) + INV_CS2_27 * INV_CS2_27 * eu * EX27[k];
-            const ty = INV_CS2_27 * (EY27[k] - uye) + INV_CS2_27 * INV_CS2_27 * eu * EY27[k];
-            const tz = INV_CS2_27 * (EZ27[k] - uze) + INV_CS2_27 * INV_CS2_27 * eu * EZ27[k];
-            const Sk = (1 - 0.5 * invTau) * W27[k] * (tx * fx + ty * fy + tz * fz);
-            f2[i * Q27 + k] = f[i * Q27 + k] - invTau * (f[i * Q27 + k] - feq) + Sk;
+            const ekx = EX27[k], eky = EY27[k], ekz = EZ27[k];
+            const wk = W27[k];
+            const eu = ekx * uxe + eky * uye + ekz * uze;
+            const feq = wk * r * (oneMinusU2half + eu * (INV_CS2_27 + INV_2CS4_27 * eu));
+            const ekF = ekx * fx + eky * fy + ekz * fz;
+            const Sk  = A * wk * (ekF * (1 + INV_CS2_27 * eu) - uF);
+            const fk = f[i27 + k];
+            f2[i27 + k] = fk - invTau * (fk - feq) + Sk;
           }
         }
       }
     }
   }
 
-  // -------------------------------------------------------- hydro stream
-  // Halfway bounce-back at solid/wall links with Ladd's moving-wall
-  // correction. Momentum exchange (force on the body) is accumulated via
-  // (f*_k + f_{-k}) e_k summed over fluid->solid links.
-  streamHydro(solid) {
-    const { nx, ny, nz, f, f2, tag, usx, usy, usz, rho } = this;
-    f.fill(0);
-    for (let z = 0; z < nz; z++) {
-      for (let y = 0; y < ny; y++) {
-        for (let x = 0; x < nx; x++) {
-          const i = ((z * ny) + y) * nx + x;
-          if (tag[i] !== TAG_FLUID) {
-            for (let k = 0; k < Q27; k++) f[i * Q27 + k] = f2[i * Q27 + k];
-            continue;
-          }
-          for (let k = 0; k < Q27; k++) {
-            const xn = x + EX27[k], yn = y + EY27[k], zn = z + EZ27[k];
-            const fk = f2[i * Q27 + k];
-            const oob = xn < 0 || xn >= nx || yn < 0 || yn >= ny || zn < 0 || zn >= nz;
-            let solidLink = oob;
-            let uxs = 0, uys = 0, uzs = 0;
-            let j = -1;
-            if (!oob) {
-              j = ((zn * ny) + yn) * nx + xn;
-              if (tag[j] === TAG_SOLID) {
-                solidLink = true;
-                uxs = usx[j]; uys = usy[j]; uzs = usz[j];
-              } else if (tag[j] === TAG_WALL) {
-                solidLink = true;
-              }
-            }
-            if (solidLink) {
-              const ko = OPP27[k];
-              const eu = EX27[k] * uxs + EY27[k] * uys + EZ27[k] * uzs;
-              const corr = 2 * W27[k] * rho[i] * eu * INV_CS2_27;
-              const bounced = fk - corr;
-              f[i * Q27 + ko] += bounced;
-              if (solid && !oob && tag[j] === TAG_SOLID) {
-                const m = fk + bounced;
-                solid.applyImpulseAtCell(xn, yn, zn,
-                                          m * EX27[k], m * EY27[k], m * EZ27[k]);
-              }
-            } else {
-              f[j * Q27 + k] += fk;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // -------------------------------------------------------- macro update
-  computeMacro() {
-    const { nx, ny, nz, f, h, rho, ux, uy, uz, phi, phiPrev, tag,
-            sigma, gravity, rhoL, rhoG, W, gx, gy, gz, lap,
-            bodyFx, bodyFy, bodyFz } = this;
+  // -------------------------------------------------------- hydro stream + macro
+  // Fused pull-scheme stream of the D3Q27 hydrodynamic distribution with
+  // the macroscopic moment update.
+  //
+  // For each fluid cell i and direction k, the source is i - e_k:
+  //   * source fluid  ->  f_k(i, t+1) = f2_k(source)
+  //   * source solid/wall -> halfway bounce-back with Ladd moving-wall:
+  //         f_k(i, t+1) = f2_OPP[k](i) + 2 w_k rho_old (e_k . u_w) / cs^2
+  //     and momentum is fed to the body:
+  //         dF = -(f2_OPP[k](i) + f_k(i, t+1)) * e_k
+  // Macroscopic moments (rho, u) accumulate as we go.
+  //
+  // Optimisations:
+  //   - pull scheme: writes f[i*27+k] sequentially, no fill(0)
+  //   - non-fluid cells skipped entirely (no copy-loop)
+  //   - hoisted nx*ny and i*Q27 invariants
+  //   - simplified Guo source term: S_k = A * w_k * (e_k.F * (1+e_k.u/cs^2) - u.F)
+  //     with A = (1 - 0.5/tau) / cs^2 (constant per step)
+  streamHydroAndMacro(solid) {
+    const { nx, ny, nz, f, f2, h, rho, ux, uy, uz, phi, tag,
+            usx, usy, usz, sigma, gravity, rhoL, rhoG, W,
+            gx, gy, gz, lap, bodyFx, bodyFy, bodyFz,
+            neighOffset27, fOffset27 } = this;
+    const nxny = nx * ny;
     const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
 
-    for (let z = 0; z < nz; z++) {
-      for (let y = 0; y < ny; y++) {
-        for (let x = 0; x < nx; x++) {
-          const i = ((z * ny) + y) * nx + x;
-          phiPrev[i] = phi[i];
+    for (let z = 1; z < nz - 1; z++) {
+      const zBase = z * nxny;
+      for (let y = 1; y < ny - 1; y++) {
+        const yzBase = zBase + y * nx;
+        for (let x = 1; x < nx - 1; x++) {
+          const i = yzBase + x;
           if (tag[i] !== TAG_FLUID) continue;
+          const i27 = i * Q27;
+          const rhoOld = rho[i];
 
           let r = 0, mx = 0, my = 0, mz = 0;
-          for (let k = 0; k < Q27; k++) {
-            const fk = f[i * Q27 + k];
-            r += fk;
-            mx += EX27[k] * fk;
-            my += EY27[k] * fk;
-            mz += EZ27[k] * fk;
-          }
-          rho[i] = r > 1e-6 ? r : 1e-6;
 
-          let p = 0;
-          for (let k = 0; k < Q7; k++) p += h[i * Q7 + k];
-          if (p < 0) p = 0; else if (p > 1) p = 1;
+          for (let k = 0; k < Q27; k++) {
+            const sIdx = i + neighOffset27[k];
+            const sTag = tag[sIdx];
+            const ekx = EX27[k], eky = EY27[k], ekz = EZ27[k];
+
+            let fk;
+            if (sTag === TAG_FLUID) {
+              fk = f2[i27 + fOffset27[k]];
+            } else {
+              // Bounce-back. fopp = what we pushed toward the obstacle.
+              const fopp = f2[i27 + OPP27[k]];
+              let corr = 0;
+              if (sTag === TAG_SOLID) {
+                const eu = ekx * usx[sIdx] + eky * usy[sIdx] + ekz * usz[sIdx];
+                corr = 2 * W27[k] * rhoOld * eu * INV_CS2_27;
+              }
+              fk = fopp + corr;
+              if (sTag === TAG_SOLID && solid) {
+                const m = fopp + fk;
+                // Force on the body acts toward the solid (-e_k_pull = e_k_push).
+                const sx = x - ekx, sy = y - eky, sz = z - ekz;
+                solid.applyImpulseAtCell(sx, sy, sz, -m * ekx, -m * eky, -m * ekz);
+              }
+            }
+            f[i27 + k] = fk;
+            r  += fk;
+            mx += ekx * fk;
+            my += eky * fk;
+            mz += ekz * fk;
+          }
+
+          const rNew = r > 1e-6 ? r : 1e-6;
+          rho[i] = rNew;
+
+          // Update phi from the freshly-streamed h moments. We do this
+          // here rather than in streamPhase so that collideHydro saw the
+          // pre-stream phi (consistent with the precomputed grad/lap).
+          let pSum = 0;
+          for (let k = 0; k < Q7; k++) pSum += h[i * Q7 + k];
+          const p = pSum < 0 ? 0 : pSum > 1 ? 1 : pSum;
           phi[i] = p;
 
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
@@ -431,9 +466,10 @@ export class Sim {
           const fx = bodyFx[i] + mu * gx[i];
           const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
           const fz = bodyFz[i] + mu * gz[i];
-          ux[i] = (mx + 0.5 * fx) / rho[i];
-          uy[i] = (my + 0.5 * fy) / rho[i];
-          uz[i] = (mz + 0.5 * fz) / rho[i];
+          const invR = 1 / rNew;
+          ux[i] = (mx + 0.5 * fx) * invR;
+          uy[i] = (my + 0.5 * fy) * invR;
+          uz[i] = (mz + 0.5 * fz) * invR;
         }
       }
     }

@@ -88,12 +88,42 @@ src/
   sim.js           the LBM solver (hydro + phase + boundary handling)
   solid.js         rigid sphere with momentum-exchange integration
   render.js        WebGL2 raymarcher + matrix helpers
-  main.js          UI wiring, scene presets, main loop
+  worker.js        Web Worker that owns the sim and posts packed volumes
+  main.js          UI wiring, scene presets, main render loop
 test/
-  smoke.mjs        runs sim for 80 steps and checks for NaN
-  profile.mjs      vertical phi profile through time (no solid)
-  sphere_profile.mjs  vertical phi profile with a falling solid
+  smoke.mjs            runs sim for 80 steps and checks for NaN
+  profile.mjs          vertical phi profile through time (no solid)
+  sphere_profile.mjs   vertical phi profile with a falling solid
+  bench.mjs            mean step time + MLUPS
+  bench_phases.mjs     per-phase ms breakdown
 ```
+
+## Performance
+
+The CPU LBM is the bottleneck. Recent optimisations:
+
+- **Pull-scheme streaming** for both D3Q27 (`streamHydroAndMacro`) and
+  D3Q7 (`streamPhase`). Each cell's distributions are written exactly
+  once and the per-step `fill(0)` of the streaming buffer (~5 MB of
+  zero-writes) is gone.
+- **Fused stream + macro** for hydro: moments (`rho`, `u`) accumulate in
+  the same pass that writes the new `f`, so the second 27-direction
+  sweep through `f` is gone, along with its second force evaluation.
+- **Precomputed neighbour offsets** -- the inner loop's `sIdx` is a
+  single add (`i + neighOffset27[k]`), not three subtracts and a
+  multiply.
+- **Simplified Guo forcing** -- `S_k = A w_k (e_k.F (1 + e_k.u/cs^2) - u.F)`
+  with `A = (1 - 0.5/tau)/cs^2` factored out per-cell.
+- **Web Worker** -- `src/worker.js` owns the sim and ticks autonomously;
+  the main thread keeps a steady 60 fps render loop and stays
+  responsive to drag / orbit independent of sim speed. The phase + solid
+  mask is packed into an RG8 buffer that's transferred zero-copy and a
+  small free-list keeps allocations off the hot path.
+
+On a typical laptop CPU at 40x28x40 grid the step time drops from ~36 ms
+to ~20 ms (1.75x speedup, ~2.2 MLUPS), with both substeps fitting in
+the 40 ms budget the sim has between worker frames while leaving the
+main thread free to render at the display refresh rate.
 
 ## Math at a glance
 
