@@ -68,7 +68,16 @@ bindSlider('rhoRatio', 'rhoRatioVal', 'rhoRatio', (v) => v.toFixed(0));
 bindSlider('solidRho', 'solidRhoVal', 'solidRho', (v) => v.toFixed(2));
 
 // ---- pointer interaction ----------------------------------------------------
-let pointerState = null;
+// State machine driven by all currently-down pointers:
+//   1 pointer down on the sphere   -> drag-sphere
+//   1 pointer down elsewhere       -> orbit
+//   2 pointers down (any source)   -> pinch-zoom (suspends the other mode)
+// Lifting back to 1 pointer resumes orbit from the remaining contact.
+const pointers = new Map();   // pointerId -> {x, y}
+let mode = null;
+let orbitState = null;        // { lastX, lastY }
+let dragState  = null;        // { hitDepth, initialOffset }
+let pinchState = null;        // { dist0, zoom0 }
 
 function canvasNorm(ev) {
   const r = canvas.getBoundingClientRect();
@@ -87,10 +96,39 @@ function raySphereHit(origin, dir, c, r) {
   return t > 0 ? t : -1;
 }
 
+function activePointers() { return Array.from(pointers.values()); }
+function pinchDist() {
+  const a = activePointers();
+  return a.length < 2 ? 0 : Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+}
+
+function endSphereDrag() {
+  if (mode === 'drag-sphere') worker.postMessage({ type: 'drag', active: false });
+  dragState = null;
+}
+
+function startOrbitFromFirstPointer() {
+  const p = activePointers()[0];
+  orbitState = { lastX: p.x, lastY: p.y };
+  mode = 'orbit';
+}
+
+function startPinch() {
+  endSphereDrag();
+  orbitState = null;
+  pinchState = { dist0: pinchDist(), zoom0: renderer.dist };
+  mode = 'pinch';
+}
+
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 canvas.addEventListener('pointerdown', (ev) => {
   canvas.setPointerCapture(ev.pointerId);
+  pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+  if (pointers.size >= 2) { startPinch(); return; }
+
+  // Single pointer down: sphere hit-test, fall back to orbit.
   const [nx, ny] = canvasNorm(ev);
   const M = renderer.maxN;
   const sc = [solidState.cx / M, solidState.cy / M, solidState.cz / M];
@@ -104,36 +142,56 @@ canvas.addEventListener('pointerdown', (ev) => {
       ray.origin[1] + ray.dir[1] * t,
       ray.origin[2] + ray.dir[2] * t,
     ];
-    pointerState = {
-      type: 'drag-sphere',
+    dragState = {
       hitDepth: t,
       initialOffset: [hit[0] - sc[0], hit[1] - sc[1], hit[2] - sc[2]],
     };
+    mode = 'drag-sphere';
     worker.postMessage({
       type: 'drag', active: true,
       x: solidState.cx, y: solidState.cy, z: solidState.cz,
     });
   } else {
-    pointerState = { type: 'orbit', x: ev.clientX, y: ev.clientY };
+    orbitState = { lastX: ev.clientX, lastY: ev.clientY };
+    mode = 'orbit';
   }
 });
 
 canvas.addEventListener('pointermove', (ev) => {
-  if (!pointerState) return;
-  if (pointerState.type === 'orbit') {
-    const dx = ev.clientX - pointerState.x;
-    const dy = ev.clientY - pointerState.y;
-    pointerState.x = ev.clientX;
-    pointerState.y = ev.clientY;
-    renderer.azimuth -= dx * 0.008;
-    renderer.elev    = Math.max(-1.4, Math.min(1.4, renderer.elev - dy * 0.008));
-  } else if (pointerState.type === 'drag-sphere') {
+  const p = pointers.get(ev.pointerId);
+  if (!p) return;
+  p.x = ev.clientX; p.y = ev.clientY;
+
+  if (mode === 'pinch') {
+    const d = pinchDist();
+    if (d > 0 && pinchState && pinchState.dist0 > 0) {
+      // Ratio: spread fingers -> zoom in (smaller dist).
+      renderer.dist = Math.max(0.6, Math.min(6.0,
+                      pinchState.zoom0 * pinchState.dist0 / d));
+    }
+    return;
+  }
+
+  if (mode === 'orbit' && orbitState) {
+    const dx = ev.clientX - orbitState.lastX;
+    const dy = ev.clientY - orbitState.lastY;
+    orbitState.lastX = ev.clientX;
+    orbitState.lastY = ev.clientY;
+    // Drag-the-scene convention: the spot under the cursor follows the
+    // cursor, i.e. dragging right rotates the scene right which means
+    // the camera moves left around the target.
+    renderer.azimuth += dx * 0.008;
+    renderer.elev    = Math.max(-1.4, Math.min(1.4, renderer.elev + dy * 0.008));
+    return;
+  }
+
+  if (mode === 'drag-sphere' && dragState) {
     const [nx, ny] = canvasNorm(ev);
     const ray = renderer.pointerRay(nx, ny);
-    const t = pointerState.hitDepth;
-    const wx = ray.origin[0] + ray.dir[0] * t - pointerState.initialOffset[0];
-    const wy = ray.origin[1] + ray.dir[1] * t - pointerState.initialOffset[1];
-    const wz = ray.origin[2] + ray.dir[2] * t - pointerState.initialOffset[2];
+    const t = dragState.hitDepth;
+    const wx = ray.origin[0] + ray.dir[0] * t - dragState.initialOffset[0];
+    const wy = ray.origin[1] + ray.dir[1] * t - dragState.initialOffset[1];
+    const wz = ray.origin[2] + ray.dir[2] * t - dragState.initialOffset[2];
     const M = renderer.maxN;
     worker.postMessage({
       type: 'drag', active: true,
@@ -142,14 +200,23 @@ canvas.addEventListener('pointermove', (ev) => {
   }
 });
 
-function endDrag() {
-  if (pointerState?.type === 'drag-sphere') {
-    worker.postMessage({ type: 'drag', active: false });
+function endPointer(ev) {
+  pointers.delete(ev.pointerId);
+  if (pointers.size === 0) {
+    endSphereDrag();
+    orbitState = null;
+    pinchState = null;
+    mode = null;
+    return;
   }
-  pointerState = null;
+  if (mode === 'pinch' && pointers.size === 1) {
+    // Resume orbit from the remaining finger.
+    pinchState = null;
+    startOrbitFromFirstPointer();
+  }
 }
-canvas.addEventListener('pointerup', endDrag);
-canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
 
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
