@@ -4,6 +4,32 @@
 
 import { Renderer } from './render.js';
 
+// ---- version badge ----------------------------------------------------------
+// The Pages workflow writes version.json next to index.html on each deploy
+// (commit sha + build time). We fetch it with a cache buster so the badge
+// always reflects whatever bundle is actually being served.
+(async () => {
+  const badge = document.getElementById('version-badge');
+  if (!badge) return;
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const v = await r.json();
+    const when = (v.buildTime || '').replace('T', ' ').replace(/Z$/, ' UTC');
+    badge.textContent = `${v.shortSha || '?'} · ${when}`;
+    badge.title = [
+      `commit ${v.sha || '?'}`,
+      `branch ${v.ref || '?'}`,
+      `run #${v.runNumber ?? '?'}`,
+      `built ${v.buildTime || '?'}`,
+    ].join('\n');
+  } catch {
+    // Local dev or pre-deploy: no version.json on disk.
+    badge.textContent = 'dev';
+    badge.title = 'No version.json -- running locally or before first Pages deploy.';
+  }
+})();
+
 const NX = 40, NY = 28, NZ = 40;
 
 const canvas = document.getElementById('view');

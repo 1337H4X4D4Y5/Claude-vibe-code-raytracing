@@ -113,3 +113,23 @@ button:hover, select:hover { border-color: var(--accent); }
 @media (max-width: 800px) {
   main { grid-template-columns: 1fr; }
 }
+
+#version-badge {
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(17, 22, 44, 0.85);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border: 1px solid #2a3358;
+  pointer-events: auto;
+  user-select: text;
+  z-index: 100;
+}
+
+#version-badge:hover { color: var(--text); }
+

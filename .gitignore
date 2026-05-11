@@ -3,3 +3,5 @@ node_modules/
 .DS_Store
 .vscode/
 .idea/
+# Stamped at deploy time by .github/workflows/pages.yml. Never committed.
+version.json

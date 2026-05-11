@@ -26,6 +26,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Stamp version.json
+        run: |
+          cat > version.json <<EOF
+          {
+            "sha":       "${GITHUB_SHA}",
+            "shortSha":  "${GITHUB_SHA:0:7}",
+            "ref":       "${GITHUB_REF_NAME}",
+            "runNumber": ${GITHUB_RUN_NUMBER},
+            "buildTime": "$(date -u +%FT%TZ)"
+          }
+          EOF
+          cat version.json
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
