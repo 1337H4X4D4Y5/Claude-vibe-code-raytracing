@@ -8,7 +8,13 @@
 </head>
 <body>
   <header>
-    <h1>Kinetic Two-Phase Flow &mdash; Fluid-Solid Coupling</h1>
+    <div class="header-row">
+      <h1>Kinetic Two-Phase Flow &mdash; Fluid-Solid Coupling</h1>
+      <span id="version-badge" title="Stamped at deploy time by .github/workflows/pages.yml">
+        <span class="version-tag">dev</span>
+        <span class="version-detail"></span>
+      </span>
+    </div>
     <p class="cite">3D implementation of Li &amp; Desbrun, SIGGRAPH 2023
        (<a href="https://www.geometry.caltech.edu/pubs/LD23.pdf" target="_blank" rel="noopener">LD23</a>).
        D3Q27 velocity LBM coupled to a D3Q7 Allen-Cahn phase-field, with
@@ -61,11 +67,6 @@
       </p>
     </aside>
   </main>
-
-  <div id="version-badge" title="Stamped at deploy time by .github/workflows/pages.yml">
-    <span class="version-tag">dev</span>
-    <span class="version-detail"></span>
-  </div>
 
   <script type="module" src="src/main.js"></script>
 </body>

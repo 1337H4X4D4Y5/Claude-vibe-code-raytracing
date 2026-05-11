@@ -114,27 +114,33 @@ button:hover, select:hover { border-color: var(--accent); }
   main { grid-template-columns: 1fr; }
 }
 
-#version-badge {
-  position: fixed;
-  right: 10px;
-  bottom: 10px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: rgba(17, 22, 44, 0.88);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
-  border: 1px solid #2a3358;
+.header-row {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.header-row h1 { margin: 0; }
+
+#version-badge {
+  display: inline-flex;
   align-items: baseline;
   gap: 8px;
-  pointer-events: auto;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: #161c33;
+  border: 1px solid #2a3358;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
   user-select: text;
-  z-index: 100;
+  white-space: nowrap;
 }
 
 #version-badge .version-tag {
   color: var(--accent);
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
   letter-spacing: 0.04em;
 }
 
@@ -144,7 +150,8 @@ button:hover, select:hover { border-color: var(--accent); }
   letter-spacing: 0.02em;
 }
 
-#version-badge .version-detail:empty { display: none; }
-
-#version-badge:hover .version-detail { color: var(--text); }
+#version-badge .version-detail:empty::before {
+  content: 'local';
+  color: var(--muted);
+}
 

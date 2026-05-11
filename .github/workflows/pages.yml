@@ -25,6 +25,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Need the full history so `git rev-list --count HEAD` returns
+          # the real commit count, not 1 from the default shallow clone.
+          fetch-depth: 0
 
       - name: Stamp version.json
         run: |
