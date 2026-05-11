@@ -28,8 +28,12 @@ jobs:
 
       - name: Stamp version.json
         run: |
+          # version = total commit count up to HEAD. Stable across workflow
+          # re-runs of the same commit, increments by one per new commit.
+          VERSION=$(git rev-list --count HEAD)
           cat > version.json <<EOF
           {
+            "version":   ${VERSION},
             "sha":       "${GITHUB_SHA}",
             "shortSha":  "${GITHUB_SHA:0:7}",
             "ref":       "${GITHUB_REF_NAME}",

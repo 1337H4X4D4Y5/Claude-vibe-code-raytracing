@@ -118,18 +118,33 @@ button:hover, select:hover { border-color: var(--accent); }
   position: fixed;
   right: 10px;
   bottom: 10px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(17, 22, 44, 0.85);
-  color: var(--muted);
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(17, 22, 44, 0.88);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
-  font-size: 11px;
-  letter-spacing: 0.02em;
   border: 1px solid #2a3358;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   pointer-events: auto;
   user-select: text;
   z-index: 100;
 }
 
-#version-badge:hover { color: var(--text); }
+#version-badge .version-tag {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+#version-badge .version-detail {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+#version-badge .version-detail:empty { display: none; }
+
+#version-badge:hover .version-detail { color: var(--text); }
 
