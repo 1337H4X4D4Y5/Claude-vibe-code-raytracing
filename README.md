@@ -12,6 +12,21 @@ live phase field.
 
 ## Running
 
+### Hosted (GitHub Pages)
+
+This branch ships a workflow at `.github/workflows/pages.yml` that
+deploys the repo root to GitHub Pages on every push. To turn it on:
+
+1. **Repo settings → Pages → Build and deployment → Source: GitHub Actions.**
+2. Push the branch (or click "Run workflow" on the *Deploy to GitHub
+   Pages* action).
+3. The action's summary will print the live URL
+   (typically `https://<user>.github.io/<repo>/`).
+
+The site is fully static — no build step.
+
+### Locally
+
 The page uses ES modules, so it has to be served over HTTP:
 
 ```bash
