@@ -509,11 +509,11 @@ export class Sim {
           let uzn = (mz + 0.5 * fz) * invR;
 
           // Mach-limit safety clamp: BGK LBM is unconditionally unstable
-          // for |u| >~ 0.3 cs. We rescale rather than letting the macros
-          // blow up; in practice this only ever fires for a handful of
-          // cells right next to the moving solid during transients.
+          // for |u| > ~0.3 cs (cs ~ 0.577). Rescale rather than letting
+          // the macros blow up. With the corrected Allen-Cahn we can let
+          // this run closer to the real limit so real splashes survive.
           const u2 = uxn * uxn + uyn * uyn + uzn * uzn;
-          const UMAX = 0.18, UMAX2 = UMAX * UMAX;
+          const UMAX = 0.28, UMAX2 = UMAX * UMAX;
           if (u2 > UMAX2) {
             const s = UMAX / Math.sqrt(u2);
             uxn *= s; uyn *= s; uzn *= s;
