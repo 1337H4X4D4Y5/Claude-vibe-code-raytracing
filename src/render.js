@@ -56,14 +56,15 @@ float intersectSphere(vec3 ro, vec3 rd, vec3 c, float r) {
 }
 
 vec3 skyColor(vec3 rd) {
-  // Up in world = -y (we set camera up = (0,-1,0)). Looking up gives
+  // Up in world = -y (camera up was set to (0,-1,0)). Looking up gives
   // rd.y < 0 -> -rd.y > 0 -> zenith side.
   float t = clamp(-rd.y * 0.5 + 0.5, 0.0, 1.0);
-  vec3 horizon = vec3(0.55, 0.60, 0.72);
-  vec3 zenith  = vec3(0.10, 0.18, 0.30);
-  vec3 sky = mix(horizon, zenith, t);
-  float sun = pow(max(dot(rd, -uLight), 0.0), 64.0);
-  return sky + vec3(1.0, 0.92, 0.72) * sun * 0.6;
+  vec3 horizon = vec3(0.72, 0.78, 0.86);
+  vec3 zenith  = vec3(0.18, 0.32, 0.55);
+  vec3 sky = mix(horizon, zenith, smoothstep(0.0, 1.0, t));
+  float sun = pow(max(dot(rd, -uLight), 0.0), 96.0);
+  sky += vec3(1.0, 0.92, 0.72) * sun * 0.9;
+  return sky;
 }
 
 vec3 worldToUVW(vec3 wp) { return wp / uBoxMax; }
@@ -82,12 +83,43 @@ vec3 shadeSphere(vec3 wp, vec3 rd) {
   vec3 n = normalize(wp - uSphereC);
   float lambert = max(dot(n, -uLight), 0.0);
   vec3 base = vec3(0.95, 0.78, 0.35);
-  vec3 col = base * (0.20 + 0.85 * lambert);
+  vec3 col = base * (0.22 + 0.85 * lambert);
   vec3 h = normalize(-uLight - rd);
   col += vec3(1.0) * pow(max(dot(h, n), 0.0), 48.0) * 0.55;
   float rim = pow(1.0 - max(dot(-rd, n), 0.0), 3.0);
   col += vec3(1.0, 0.85, 0.6) * rim * 0.18;
   return col;
+}
+
+// Walks a ray from ro along rd to either the next sphere hit or the
+// cube exit, and returns whatever's there along with the distance to
+// that intersection in outT.
+vec3 traceBackdrop(vec3 ro, vec3 rd, out float outT) {
+  vec2 tt = intersectAABB(ro, rd, vec3(0.0), uBoxMax);
+  float tExit = max(tt.y, 0.0);
+  float tS = intersectSphere(ro, rd, uSphereC, uSphereR);
+  if (tS > 0.0 && tS < tExit) {
+    outT = tS;
+    return shadeSphere(ro + tS * rd, rd);
+  }
+  outT = tExit;
+  return skyColor(rd);
+}
+
+// Beer-Lambert tint for a path of length d through water.
+// Per-channel coefficients picked so red attenuates fastest (deep
+// water shifts toward cyan-green like real water).
+vec3 waterAttenuate(vec3 backColor, float d) {
+  vec3 absorbCoef = vec3(2.6, 0.55, 0.25);
+  vec3 trans = exp(-absorbCoef * d);
+  vec3 waterColor = vec3(0.03, 0.11, 0.16);
+  return trans * backColor + (1.0 - trans) * waterColor;
+}
+
+// Schlick fresnel for water/air. f0 = ((n1-n2)/(n1+n2))^2; for air->water
+// that's ~0.02.
+float fresnelSchlick(float cosI, float f0) {
+  return f0 + (1.0 - f0) * pow(1.0 - cosI, 5.0);
 }
 
 void main() {
@@ -99,7 +131,6 @@ void main() {
   vec3 rd = normalize(wFar - wNear);
   vec3 ro = uCamPos;
 
-  // Tank intersection.
   vec2 tt = intersectAABB(ro, rd, vec3(0.0), uBoxMax);
   float tEnter = max(tt.x, 0.0);
   float tExit  = tt.y;
@@ -111,23 +142,17 @@ void main() {
     return;
   }
 
-  // Sphere (analytical, inside the cube only).
   float tSphereRaw = intersectSphere(ro, rd, uSphereC, uSphereR);
-  float tSphere = (tSphereRaw > 0.0 && tSphereRaw > tEnter && tSphereRaw < tExit)
-                  ? tSphereRaw : -1.0;
+  float tSphere = (tSphereRaw > tEnter && tSphereRaw < tExit) ? tSphereRaw : -1.0;
   float tEnd = (tSphere > 0.0) ? tSphere : tExit;
 
-  // Sample phi a touch inside the cube to decide the starting medium
-  // (sampling exactly on a wall picks up the wall cell's seeded phi).
+  // Sample phi a touch inside the cube so wall-cell phi doesn't bias us.
   float epsT = 0.002 * (tEnd - tEnter);
   float prevT = tEnter + epsT;
   float prevPhi = samplePhi(ro + prevT * rd);
   bool startInWater = prevPhi > 0.5;
 
-  // March looking for the first phi = 0.5 crossing. We deliberately do
-  // *only* surface detection here -- volume haze is what made the water
-  // look cloudy. Once we know where the interface is, Beer-Lambert over
-  // the actual underwater path length gives a sharp layered look.
+  // March looking for the first phi = 0.5 crossing.
   const int STEPS = 48;
   float dt = (tEnd - prevT) / float(STEPS);
   float jit = fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453);
@@ -139,8 +164,6 @@ void main() {
     float phi = samplePhi(ro + t * rd);
     bool nowInWater = phi > 0.5;
     if (nowInWater != startInWater) {
-      // Linear-interp refinement of the 0.5 crossing between (prevT,
-      // prevPhi) and (t, phi).
       float u = (0.5 - prevPhi) / (phi - prevPhi);
       tSurface = prevT + u * (t - prevT);
       break;
@@ -149,41 +172,71 @@ void main() {
     prevPhi = phi;
   }
 
-  // Backdrop colour at tEnd: shaded sphere or sky beyond the back wall.
-  vec3 backColor;
-  if (tSphere > 0.0) {
-    backColor = shadeSphere(ro + tSphere * rd, rd);
-  } else {
-    backColor = skyColor(rd);
-  }
+  vec3 col;
 
-  // Underwater path length: distance the ray travels through phi > 0.5.
-  float waterDist = 0.0;
   if (tSurface > 0.0) {
-    waterDist = startInWater ? (tSurface - tEnter) : (tEnd - tSurface);
-  } else if (startInWater) {
-    waterDist = tEnd - tEnter;
-  }
-
-  // Beer-Lambert tint: red absorbs fastest, so deep water shifts toward
-  // a deep teal. Coefficient scale matches the world-space dimensions
-  // (uBoxMax has unit longest axis).
-  vec3 absorbCoef = vec3(3.2, 1.4, 0.8);
-  vec3 trans = exp(-absorbCoef * waterDist);
-  vec3 waterColor = vec3(0.05, 0.20, 0.32);
-  vec3 col = trans * backColor + (1.0 - trans) * waterColor;
-
-  // Fresnel-mixed reflection at the surface, plus a specular highlight.
-  if (tSurface > 0.0) {
+    // -- Surface shading with proper refraction. --
     vec3 wpSurf = ro + tSurface * rd;
     vec3 g = gradPhi(wpSurf);
-    vec3 n = -normalize(g + vec3(1e-6));
+    // gradPhi points from air (phi=0) toward water (phi=1). For the
+    // surface normal we want it pointing TOWARD the incoming side.
+    vec3 n = normalize(g + vec3(1e-6));
+    if (startInWater) n = -n;     // already points into air (toward camera)
+    // Guard against rays whose grad happens to align with rd.
     if (dot(n, rd) > 0.0) n = -n;
-    float fres = pow(1.0 - max(dot(-rd, n), 0.0), 4.0);
-    vec3 reflCol = skyColor(reflect(rd, n));
-    col = mix(col, reflCol, fres * 0.7 + 0.04);
+
+    bool entering = !startInWater;
+    float iorRatio = entering ? (1.0 / 1.33) : (1.33 / 1.0);
+
+    vec3 reflDir = reflect(rd, n);
+    vec3 refrDir = refract(rd, n, iorRatio);
+    bool tir = dot(refrDir, refrDir) < 1e-4;
+
+    // -- Reflection side: sky (and pre-tinted by water if we're looking
+    //    up from underwater toward the surface). --
+    vec3 reflCol = skyColor(reflDir);
+    if (startInWater) {
+      // The light reflecting back into the camera also travelled through
+      // water from the camera to the surface.
+      reflCol = waterAttenuate(reflCol, tSurface - tEnter);
+    }
+
+    // -- Refraction side: cast a new ray from just past the surface in
+    //    the refracted direction; tint by water Beer-Lambert over the
+    //    distance it spends in water. --
+    vec3 refrCol;
+    if (tir) {
+      refrCol = reflCol;
+    } else {
+      vec3 ro2 = wpSurf + 0.003 * refrDir;
+      float tBack;
+      vec3 backColor = traceBackdrop(ro2, refrDir, tBack);
+      if (entering) {
+        // Refracted ray now inside water -> attenuate over its length.
+        refrCol = waterAttenuate(backColor, tBack);
+      } else {
+        // Refracted ray now in air; no further attenuation, but we
+        // already travelled through water from the camera to here.
+        refrCol = waterAttenuate(backColor, tSurface - tEnter);
+      }
+    }
+
+    // -- Fresnel mix. --
+    float cosI = max(dot(-rd, n), 0.0);
+    float fres = fresnelSchlick(cosI, 0.02);
+    col = mix(refrCol, reflCol, fres);
+
+    // -- Tight specular for the highlight on the surface. --
     vec3 h = normalize(-uLight + -rd);
-    col += vec3(1.0) * pow(max(dot(h, n), 0.0), 96.0) * 0.45;
+    float spec = pow(max(dot(h, n), 0.0), 256.0);
+    col += vec3(1.0, 0.95, 0.85) * spec * 0.6;
+  } else {
+    // -- No water surface in this ray. Just the backdrop, optionally
+    //    tinted if the camera is underwater. --
+    vec3 backColor = (tSphere > 0.0)
+      ? shadeSphere(ro + tSphere * rd, rd)
+      : skyColor(rd);
+    col = startInWater ? waterAttenuate(backColor, tEnd - tEnter) : backColor;
   }
 
   // Tonemap + gamma.
