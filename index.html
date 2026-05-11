@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Kinetic Two-Phase Flow with Fluid-Solid Coupling (LD23, 2D)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Kinetic Two-Phase Flow &mdash; Fluid-Solid Coupling</h1>
+    <p class="cite">3D implementation of Li &amp; Desbrun, SIGGRAPH 2023
+       (<a href="https://www.geometry.caltech.edu/pubs/LD23.pdf" target="_blank" rel="noopener">LD23</a>).
+       D3Q27 velocity LBM coupled to a D3Q7 Allen-Cahn phase-field, with
+       moving-wall bounce-back, momentum-exchange forces and dead/fresh cell
+       repopulation. Volume rendered with a WebGL2 raymarcher.</p>
+  </header>
+
+  <main>
+    <canvas id="view" width="720" height="540"></canvas>
+
+    <aside id="controls">
+      <fieldset>
+        <legend>Scene</legend>
+        <button id="reset">Reset</button>
+        <button id="pause">Pause</button>
+        <label>
+          Preset
+          <select id="preset">
+            <option value="drop">Drop solid in water</option>
+            <option value="dam">Dam break with obstacle</option>
+            <option value="rise">Buoyant rise</option>
+          </select>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Physics</legend>
+        <label>Surface tension &sigma;
+          <input id="sigma" type="range" min="0" max="0.04" step="0.001" value="0.012" />
+          <span id="sigmaVal">0.012</span>
+        </label>
+        <label>Gravity g
+          <input id="gravity" type="range" min="-0.001" max="0.003" step="0.0001" value="0.0012" />
+          <span id="gravityVal">0.0012</span>
+        </label>
+        <label>Density ratio &rho;<sub>l</sub>/&rho;<sub>g</sub>
+          <input id="rhoRatio" type="range" min="1" max="50" step="1" value="10" />
+          <span id="rhoRatioVal">10</span>
+        </label>
+        <label>Solid density (relative to liquid)
+          <input id="solidRho" type="range" min="0.2" max="4" step="0.05" value="1.6" />
+          <span id="solidRhoVal">1.6</span>
+        </label>
+      </fieldset>
+
+      <p class="hint">
+        <strong>Drag</strong> the floating sphere with the mouse.<br />
+        <strong>Drag empty space</strong> to orbit the camera.<br />
+        <strong>Scroll</strong> to zoom.
+      </p>
+    </aside>
+  </main>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
