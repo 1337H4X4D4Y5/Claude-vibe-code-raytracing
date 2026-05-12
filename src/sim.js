@@ -443,6 +443,7 @@ export class Sim {
     const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
+    const dRho = rhoL - rhoG;
 
     for (let z = 1; z < nz - 1; z++) {
       const zBase = z * nxny;
@@ -474,10 +475,16 @@ export class Sim {
               }
               fk = fopp + corr;
               if (sTag === TAG_SOLID && solid) {
-                const m = fopp + fk;
-                // Force on the body acts toward the solid (-e_k_pull = e_k_push).
+                // Scale impulse on the body by local phase density to
+                // recover something like the real mass ratio between
+                // gas and water (Boussinesq LBM has rho_LBM ~= 1 in
+                // both, which makes the body feel gas with too much
+                // inertia and creates a pre-impact pressure wave that
+                // disturbs the water surface before contact).
+                const phaseWeight = rhoG + phi[i] * dRho;
+                const wm = (fopp + fk) * phaseWeight;
                 const sx = x - ekx, sy = y - eky, sz = z - ekz;
-                solid.applyImpulseAtCell(sx, sy, sz, -m * ekx, -m * eky, -m * ekz);
+                solid.applyImpulseAtCell(sx, sy, sz, -wm * ekx, -wm * eky, -wm * ekz);
               }
             }
             f[i27 + k] = fk;

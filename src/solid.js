@@ -78,14 +78,19 @@ export class RigidSphere {
   // Cells that *just* became solid hand their fluid momentum to the body
   // and are tagged solid by retagCells. We pick them up by scanning
   // tag/tagPrev after step() and reading the previous ux/uy/uz from sim.
+  // The momentum is scaled by the cell's phase density so the body
+  // sweeps gas as light and water as heavy (matches the phase-weighted
+  // bounce-back impulse in streamHydroAndMacro).
   absorbDeadCells(sim) {
-    const { nx, ny, nz, tag, tagPrev, ux, uy, uz, rho } = sim;
+    const { nx, ny, nz, tag, tagPrev, ux, uy, uz, rho, phi, rhoL, rhoG } = sim;
+    const dRho = rhoL - rhoG;
     for (let z = 1; z < nz - 1; z++) {
       for (let y = 1; y < ny - 1; y++) {
         for (let x = 1; x < nx - 1; x++) {
           const i = ((z * ny) + y) * nx + x;
           if (tag[i] !== 1 || tagPrev[i] !== 0) continue;  // SOLID && was FLUID
-          const r = rho[i];
+          const phaseWeight = rhoG + phi[i] * dRho;
+          const r = rho[i] * phaseWeight;
           this.applyImpulseAtCell(x, y, z, r * ux[i], r * uy[i], r * uz[i]);
         }
       }

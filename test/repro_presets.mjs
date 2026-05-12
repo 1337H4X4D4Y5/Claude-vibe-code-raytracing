@@ -5,7 +5,7 @@ import { RigidSphere } from '../src/solid.js';
 function runScene(name, setup) {
   const NX = 40, NY = 28, NZ = 40;
   const sim = new Sim(NX, NY, NZ);
-  sim.tau = 0.55; sim.tauPhi = 0.7; sim.sigma = 0.018;
+  sim.tau = 0.55; sim.tauPhi = 0.7; sim.sigma = 0.008;
   sim.gravity = 0.0022; sim.rhoL = 1.0; sim.rhoG = 0.1; sim.W = 4.0;
 
   const solid = new RigidSphere(NX, NY, NZ, {
@@ -46,9 +46,9 @@ function runScene(name, setup) {
 }
 
 runScene('drop', (sim, solid, NX, NY, NZ) => {
-  sim.initFlat(NY * 0.45);
-  solid.cx = NX * 0.5; solid.cy = NY * 0.15; solid.cz = NZ * 0.5;
-  solid.setRadius(4.0); solid.setDensity(1.6);
+  sim.initFlat(NY * 0.25);
+  solid.cx = NX * 0.5; solid.cy = NY * 0.60; solid.cz = NZ * 0.5;
+  solid.setRadius(4.0); solid.setDensity(1.4);
 });
 
 runScene('dam', (sim, solid, NX, NY, NZ) => {

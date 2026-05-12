@@ -29,7 +29,11 @@ function initSim() {
   // more visible splashes and ripples.
   sim.tau     = 0.55;
   sim.tauPhi  = 0.7;
-  sim.sigma   = 0.018;
+  // At a 4-cell sphere radius the capillary length is comparable to the
+  // sphere itself, so a heavy ball will actually float on surface
+  // tension if sigma is too high. Lower sigma keeps the visible-but-not-
+  // dominant character.
+  sim.sigma   = 0.008;
   sim.gravity = 0.0022;
   sim.rhoL    = 1.0;
   sim.rhoG    = 0.1;
@@ -43,12 +47,21 @@ function initSim() {
 function resetTo(name) {
   switch (name) {
     case 'drop':
-      sim.initFlat(NY * 0.45);
-      solid.cx = NX * 0.5; solid.cy = NY * 0.15; solid.cz = NZ * 0.5;
+      // "Drop" used to start the sphere in air and let it fall through
+      // the water surface, but that exposed a real limitation of this
+      // Boussinesq LBM: rho_LBM is ~1 in gas too, so gas has water-like
+      // inertia and the sphere bounces off the surface instead of
+      // punching through. Until the LBM is upgraded to a variable-
+      // density form (Lee-Lin or Inamuro style) we just start the
+      // sphere already submerged, away from the interface, so the
+      // visible dynamics (sinking, wake, displacement) come from bulk
+      // flow rather than the broken interface impact.
+      sim.initFlat(NY * 0.25);
+      solid.cx = NX * 0.5; solid.cy = NY * 0.60; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
       solid.setRadius(4.0);
-      solid.setDensity(1.6);
+      solid.setDensity(1.4);
       break;
     case 'dam': {
       const { nx, ny, nz } = sim;
