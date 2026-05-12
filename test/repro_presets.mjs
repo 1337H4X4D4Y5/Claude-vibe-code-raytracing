@@ -5,8 +5,8 @@ import { RigidSphere } from '../src/solid.js';
 function runScene(name, setup) {
   const NX = 40, NY = 28, NZ = 40;
   const sim = new Sim(NX, NY, NZ);
-  sim.tau = 0.55; sim.tauPhi = 0.7; sim.sigma = 0.008;
-  sim.gravity = 0.0022; sim.rhoL = 1.0; sim.rhoG = 0.1; sim.W = 4.0;
+  sim.tau = 0.75; sim.tauPhi = 0.7; sim.sigma = 0.008;
+  sim.gravity = 0.0010; sim.rhoL = 1.0; sim.rhoG = 0.1; sim.W = 4.0;
 
   const solid = new RigidSphere(NX, NY, NZ, {
     cx: NX * 0.5, cy: NY * 0.2, cz: NZ * 0.5, r: 4, density: 1.6,

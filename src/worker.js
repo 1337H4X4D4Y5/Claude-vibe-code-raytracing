@@ -27,14 +27,14 @@ function initSim() {
   // (kinematic viscosity 0.0167) which is closer to actual water-like
   // Reynolds numbers. Stronger gravity and surface tension also give
   // more visible splashes and ripples.
-  sim.tau     = 0.55;
+  // Body force is the real Archimedes form (rho_phase * g, not the
+  // Boussinesq (rho_phase - rho_ref) g). Buoyancy is ~2x stronger,
+  // which trips the BGK Mach limit at the previous tau; bump tau and
+  // drop gravity for a stable balance.
+  sim.tau     = 0.75;
   sim.tauPhi  = 0.7;
-  // At a 4-cell sphere radius the capillary length is comparable to the
-  // sphere itself, so a heavy ball will actually float on surface
-  // tension if sigma is too high. Lower sigma keeps the visible-but-not-
-  // dominant character.
   sim.sigma   = 0.008;
-  sim.gravity = 0.0022;
+  sim.gravity = 0.0010;
   sim.rhoL    = 1.0;
   sim.rhoG    = 0.1;
   sim.W       = 4.0;

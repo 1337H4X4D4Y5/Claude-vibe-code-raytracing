@@ -124,7 +124,12 @@ export class Sim {
 
   // Sets rho_LBM and the hydro distributions to satisfy the LBM
   // hydrostatic equation with the current phi field:
-  //     d rho_LBM / d y = (rho_phase(y) - rho_ref) * g / cs^2
+  //     d rho_LBM / d y = rho_phase(y) * g / cs^2
+  // i.e. the full Archimedes pressure gradient, not the Boussinesq
+  // linearization. This gives correct buoyancy on submerged bodies
+  // (F = rho_phase * V * g, not (rho_phase - rho_ref) V g) at the price
+  // of a slightly steeper LBM density variation -- still well inside
+  // Mach-stable territory for these grid sizes.
   // Integrates upward from y=0 in each (x,z) column. Without this, the
   // gravity transient creates standing pressure waves that the
   // low-viscosity BGK relaxation never damps; with this seed the system
@@ -132,7 +137,6 @@ export class Sim {
   // buoyancy and dam-break scenes.
   seedHydrostatic() {
     const { nx, ny, nz, phi, rho, f } = this;
-    const rhoRef = 0.5 * (this.rhoL + this.rhoG);
     const gOverCs2 = this.gravity * INV_CS2_27;
     for (let z = 0; z < nz; z++) {
       for (let x = 0; x < nx; x++) {
@@ -143,7 +147,7 @@ export class Sim {
           const i27 = i * Q27;
           for (let k = 0; k < Q27; k++) f[i27 + k] = W27[k] * r;
           const rhoPhi = this.rhoG + phi[i] * (this.rhoL - this.rhoG);
-          r += (rhoPhi - rhoRef) * gOverCs2;
+          r += rhoPhi * gOverCs2;
         }
       }
     }
@@ -368,7 +372,6 @@ export class Sim {
             tau, sigma, gravity, rhoL, rhoG, W,
             gx, gy, gz, lap, bodyFx, bodyFy, bodyFz } = this;
     const invTau = 1 / tau;
-    const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
     // Guo source term constant: S_k = A * w_k * (ekF * (1 + eu/cs^2) - uF)
@@ -390,7 +393,7 @@ export class Sim {
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
           const rhoPhi = rhoG + p * (rhoL - rhoG);
           const fx = bodyFx[i] + mu * gx[i];
-          const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
+          const fy = bodyFy[i] + mu * gy[i] + rhoPhi * gravity;
           const fz = bodyFz[i] + mu * gz[i];
 
           const halfR = 0.5 / r;
@@ -440,7 +443,6 @@ export class Sim {
             gx, gy, gz, lap, bodyFx, bodyFy, bodyFz,
             neighOffset27, fOffset27 } = this;
     const nxny = nx * ny;
-    const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
     const dRho = rhoL - rhoG;
@@ -508,7 +510,7 @@ export class Sim {
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
           const rhoPhi = rhoG + p * (rhoL - rhoG);
           const fx = bodyFx[i] + mu * gx[i];
-          const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
+          const fy = bodyFy[i] + mu * gy[i] + rhoPhi * gravity;
           const fz = bodyFz[i] + mu * gz[i];
           const invR = 1 / rNew;
           let uxn = (mx + 0.5 * fx) * invR;
