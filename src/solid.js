@@ -171,12 +171,13 @@ export class RigidSphere {
     // slow background. Without explicit damping these compound and the
     // ball rattles around forever.
     //
-    // 8 % linear / 4 % angular damping per step puts terminal velocity
-    // around g/0.08 ~ 0.01 cells per step, which is plenty to feel
-    // gravity-driven motion but slow enough that compounding numerical
-    // bias dies out on its own.
-    const linDamp = 0.92;
-    const omegaDamp = 0.96;
+    // 15 % linear / 8 % angular damping per step. Strong enough to
+    // keep the body from overshooting through the (numerically wild)
+    // interface and slamming into the far wall, but the acceleration
+    // cap above lets gravity still reach terminal velocity ~0.04
+    // cells/step which reads as natural sink/rise speed.
+    const linDamp = 0.85;
+    const omegaDamp = 0.92;
     this.vx *= linDamp; this.vy *= linDamp; this.vz *= linDamp;
     this.wx *= omegaDamp; this.wy *= omegaDamp; this.wz *= omegaDamp;
 

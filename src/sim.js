@@ -504,8 +504,7 @@ export class Sim {
                 // recover something like the real mass ratio between
                 // gas and water (Boussinesq LBM has rho_LBM ~= 1 in
                 // both, which makes the body feel gas with too much
-                // inertia and creates a pre-impact pressure wave that
-                // disturbs the water surface before contact).
+                // inertia).
                 const phaseWeight = rhoG + phi[i] * dRho;
                 const wm = (fopp + fk) * phaseWeight;
                 const sx = x - ekx, sy = y - eky, sz = z - ekz;
