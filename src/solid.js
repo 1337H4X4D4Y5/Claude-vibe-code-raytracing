@@ -120,9 +120,32 @@ export class RigidSphere {
     this.wy += dt * this.Ty / this.I;
     this.wz += dt * this.Tz / this.I;
 
-    // Mild angular damping (no real shear stress model in 2nd-order LBM).
-    const omegaDamp = 0.985;
+    // Damping. The voxelised sphere is a non-spherical bounce-back
+    // surface so even an at-rest fluid gives the body a tiny biased
+    // force from imperfect symmetry; FP32 LBM drift adds its own
+    // slow background. Without explicit damping these compound and the
+    // ball rattles around forever.
+    //
+    // 8 % linear / 4 % angular damping per step puts terminal velocity
+    // around g/0.08 ~ 0.01 cells per step, which is plenty to feel
+    // gravity-driven motion but slow enough that compounding numerical
+    // bias dies out on its own.
+    const linDamp = 0.92;
+    const omegaDamp = 0.96;
+    this.vx *= linDamp; this.vy *= linDamp; this.vz *= linDamp;
     this.wx *= omegaDamp; this.wy *= omegaDamp; this.wz *= omegaDamp;
+
+    // Snap to rest below the noise floor (~1 mcell/step) so the ball
+    // visually settles instead of jittering. Threshold is well below
+    // any gravity-driven terminal velocity above so real dynamics
+    // still come through.
+    const SNAP = 0.0008;
+    if (Math.abs(this.vx) < SNAP) this.vx = 0;
+    if (Math.abs(this.vy) < SNAP) this.vy = 0;
+    if (Math.abs(this.vz) < SNAP) this.vz = 0;
+    if (Math.abs(this.wx) < SNAP) this.wx = 0;
+    if (Math.abs(this.wy) < SNAP) this.wy = 0;
+    if (Math.abs(this.wz) < SNAP) this.wz = 0;
 
     this.cx += dt * this.vx;
     this.cy += dt * this.vy;

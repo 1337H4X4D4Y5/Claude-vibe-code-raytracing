@@ -27,14 +27,16 @@ function initSim() {
   // (kinematic viscosity 0.0167) which is closer to actual water-like
   // Reynolds numbers. Stronger gravity and surface tension also give
   // more visible splashes and ripples.
-  // Body force is the real Archimedes form (rho_phase * g, not the
-  // Boussinesq (rho_phase - rho_ref) g). Buoyancy is ~2x stronger,
-  // which trips the BGK Mach limit at the previous tau; bump tau and
-  // drop gravity for a stable balance.
-  sim.tau     = 0.75;
+  // Boussinesq body force ((rho_phase - rho_ref) * g) -- only half of
+  // real Archimedes buoyancy, but the smaller pressure gradient keeps
+  // the LBM Mach-stable and lets the body actually settle. Densities
+  // in the presets are picked relative to rho_ref = 0.55, NOT relative
+  // to water 1.0, so anything below 0.55 floats and anything above
+  // sinks.
+  sim.tau     = 0.8;
   sim.tauPhi  = 0.7;
   sim.sigma   = 0.008;
-  sim.gravity = 0.0010;
+  sim.gravity = 0.0015;
   sim.rhoL    = 1.0;
   sim.rhoG    = 0.1;
   sim.W       = 4.0;
@@ -92,14 +94,14 @@ function resetTo(name) {
     }
     case 'rise':
       sim.initFlat(NY * 0.25);
-      // Place the sphere deep but with room above and below it -- starting
-      // pinned against the bottom wall created a gravity-trapped pressure
-      // pocket that fed back into the body and blew up the LBM.
+      // Boussinesq buoyancy threshold is rho_ref = 0.55 (NOT real
+      // water density 1.0), so a slightly-buoyant ball wants density
+      // a bit below that. 0.3 gives a clear but stable rise.
       solid.cx = NX * 0.5; solid.cy = NY * 0.70; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
       solid.setRadius(4.0);
-      solid.setDensity(0.5);
+      solid.setDensity(0.3);
       break;
   }
 }

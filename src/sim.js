@@ -98,15 +98,24 @@ export class Sim {
   rhoFromPhi(p) { return this.rhoG + p * (this.rhoL - this.rhoG); }
 
   // ------------------------------------------------------------------ init
+  // Seeds phi with the equilibrium tanh interface profile, not a sharp
+  // 0/1 step. A sharp step has total variation that the Allen-Cahn
+  // anti-diffusion has to redistribute over the first few hundred
+  // steps; that relaxation generates spurious flow which couples
+  // through surface tension into the hydro and ends up pushing the
+  // body around for the entire simulation. Initialising at the
+  // equilibrium profile (phi = 1/2 (1 + tanh(2(y-y_w)/W))) means the
+  // interface starts in (near-)mechanical equilibrium and the body
+  // can actually come to rest.
   initFlat(waterlineY) {
-    const { nx, ny, nz } = this;
+    const { nx, ny, nz, W } = this;
     for (let z = 0; z < nz; z++) {
       for (let y = 0; y < ny; y++) {
+        const phiCol = 0.5 * (1 + Math.tanh(2 * (y - waterlineY) / W));
         for (let x = 0; x < nx; x++) {
           const i = this.idx(x, y, z);
-          const phi = y > waterlineY ? 1.0 : 0.0;
-          this.phi[i]     = phi;
-          this.phiPrev[i] = phi;
+          this.phi[i]     = phiCol;
+          this.phiPrev[i] = phiCol;
           this.rho[i]     = 1.0;
           this.ux[i] = this.uy[i] = this.uz[i] = 0;
           const onWall = x === 0 || x === nx - 1 ||
@@ -115,7 +124,7 @@ export class Sim {
           this.tag[i] = onWall ? TAG_WALL : TAG_FLUID;
           this.tagPrev[i] = this.tag[i];
           for (let k = 0; k < Q27; k++) this.f[i * Q27 + k] = W27[k];
-          for (let k = 0; k < Q7;  k++) this.h[i * Q7  + k] = W7[k] * phi;
+          for (let k = 0; k < Q7;  k++) this.h[i * Q7  + k] = W7[k] * phiCol;
         }
       }
     }
@@ -124,19 +133,17 @@ export class Sim {
 
   // Sets rho_LBM and the hydro distributions to satisfy the LBM
   // hydrostatic equation with the current phi field:
-  //     d rho_LBM / d y = rho_phase(y) * g / cs^2
-  // i.e. the full Archimedes pressure gradient, not the Boussinesq
-  // linearization. This gives correct buoyancy on submerged bodies
-  // (F = rho_phase * V * g, not (rho_phase - rho_ref) V g) at the price
-  // of a slightly steeper LBM density variation -- still well inside
-  // Mach-stable territory for these grid sizes.
-  // Integrates upward from y=0 in each (x,z) column. Without this, the
-  // gravity transient creates standing pressure waves that the
-  // low-viscosity BGK relaxation never damps; with this seed the system
-  // starts near equilibrium and the simulation stays stable for the
-  // buoyancy and dam-break scenes.
+  //     d rho_LBM / d y = (rho_phase - rho_ref) * g / cs^2
+  // This is the Boussinesq form, matched to the body force in
+  // collideHydro. It gives only ((rho_phase - rho_ref) / rho_phase) of
+  // real Archimedes buoyancy (so a body needs slightly different
+  // density to float/sink than real-world numbers), but the smaller
+  // pressure gradient keeps the LBM well clear of its Mach limit and
+  // the body actually settles instead of being driven by fluid
+  // oscillations.
   seedHydrostatic() {
     const { nx, ny, nz, phi, rho, f } = this;
+    const rhoRef = 0.5 * (this.rhoL + this.rhoG);
     const gOverCs2 = this.gravity * INV_CS2_27;
     for (let z = 0; z < nz; z++) {
       for (let x = 0; x < nx; x++) {
@@ -147,7 +154,7 @@ export class Sim {
           const i27 = i * Q27;
           for (let k = 0; k < Q27; k++) f[i27 + k] = W27[k] * r;
           const rhoPhi = this.rhoG + phi[i] * (this.rhoL - this.rhoG);
-          r += rhoPhi * gOverCs2;
+          r += (rhoPhi - rhoRef) * gOverCs2;
         }
       }
     }
@@ -225,41 +232,55 @@ export class Sim {
   }
 
   // -------------------------------------------------------- fresh cells
-  // Cells that switched solid->fluid this step are reseeded with
-  // equilibrium populations using the body's local velocity, and their
-  // phase is averaged from fluid neighbours.
+  // Cells that switched solid->fluid this step are reseeded by averaging
+  // phi, rho and velocity from fluid neighbours.
+  //
+  // Previously these cells were seeded with the *body's* surface
+  // velocity, which broke momentum conservation: the body kept its full
+  // velocity AND new fluid appeared in its wake carrying a copy of
+  // that velocity. Over many steps the system gained spurious energy
+  // and the ball would never settle. Averaging from fluid neighbours
+  // is what real "uncovering" looks like (fluid rushes in from the
+  // surroundings) and is conservative.
   handleFreshCells(solid) {
     const { nx, ny, nz, tag, tagPrev,
             ux, uy, uz, rho, phi, phiPrev, f, h } = this;
-    const tmp = [0, 0, 0];
     for (let z = 1; z < nz - 1; z++) {
       for (let y = 1; y < ny - 1; y++) {
         for (let x = 1; x < nx - 1; x++) {
           const i = ((z * ny) + y) * nx + x;
           if (tag[i] !== TAG_FLUID || tagPrev[i] !== TAG_SOLID) continue;
-          if (solid) solid.surfaceVelocity(x, y, z, tmp);
-          else { tmp[0] = tmp[1] = tmp[2] = 0; }
-          const vx = tmp[0], vy = tmp[1], vz = tmp[2];
 
-          let psum = 0, pcnt = 0;
+          let psum = 0, rsum = 0, vxs = 0, vys = 0, vzs = 0, pcnt = 0;
           for (let dz = -1; dz <= 1; dz++) {
             for (let dy = -1; dy <= 1; dy++) {
               for (let dx = -1; dx <= 1; dx++) {
                 if (!dx && !dy && !dz) continue;
                 const j = (((z + dz) * ny) + (y + dy)) * nx + (x + dx);
-                if (tag[j] === TAG_FLUID) { psum += phi[j]; pcnt++; }
+                if (tag[j] === TAG_FLUID) {
+                  psum += phi[j];
+                  rsum += rho[j];
+                  vxs  += ux[j];
+                  vys  += uy[j];
+                  vzs  += uz[j];
+                  pcnt++;
+                }
               }
             }
           }
           const p = pcnt > 0 ? psum / pcnt : phiPrev[i];
+          const r = pcnt > 0 ? rsum / pcnt : 1.0;
+          const vx = pcnt > 0 ? vxs / pcnt : 0;
+          const vy = pcnt > 0 ? vys / pcnt : 0;
+          const vz = pcnt > 0 ? vzs / pcnt : 0;
           phi[i] = p; phiPrev[i] = p;
-          rho[i] = 1.0;
+          rho[i] = r;
           ux[i] = vx; uy[i] = vy; uz[i] = vz;
 
           const u2 = vx * vx + vy * vy + vz * vz;
           for (let k = 0; k < Q27; k++) {
             const eu = EX27[k] * vx + EY27[k] * vy + EZ27[k] * vz;
-            f[i * Q27 + k] = W27[k] * 1.0 *
+            f[i * Q27 + k] = W27[k] * r *
               (1 + INV_CS2_27 * eu + INV_2CS4_27 * eu * eu - 1.5 * u2);
           }
           for (let k = 0; k < Q7; k++) {
@@ -372,6 +393,7 @@ export class Sim {
             tau, sigma, gravity, rhoL, rhoG, W,
             gx, gy, gz, lap, bodyFx, bodyFy, bodyFz } = this;
     const invTau = 1 / tau;
+    const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
     // Guo source term constant: S_k = A * w_k * (ekF * (1 + eu/cs^2) - uF)
@@ -393,7 +415,7 @@ export class Sim {
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
           const rhoPhi = rhoG + p * (rhoL - rhoG);
           const fx = bodyFx[i] + mu * gx[i];
-          const fy = bodyFy[i] + mu * gy[i] + rhoPhi * gravity;
+          const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
           const fz = bodyFz[i] + mu * gz[i];
 
           const halfR = 0.5 / r;
@@ -443,6 +465,7 @@ export class Sim {
             gx, gy, gz, lap, bodyFx, bodyFy, bodyFz,
             neighOffset27, fOffset27 } = this;
     const nxny = nx * ny;
+    const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
     const dRho = rhoL - rhoG;
@@ -510,19 +533,22 @@ export class Sim {
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
           const rhoPhi = rhoG + p * (rhoL - rhoG);
           const fx = bodyFx[i] + mu * gx[i];
-          const fy = bodyFy[i] + mu * gy[i] + rhoPhi * gravity;
+          const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
           const fz = bodyFz[i] + mu * gz[i];
           const invR = 1 / rNew;
           let uxn = (mx + 0.5 * fx) * invR;
           let uyn = (my + 0.5 * fy) * invR;
           let uzn = (mz + 0.5 * fz) * invR;
 
-          // Mach-limit safety clamp: BGK LBM is unconditionally unstable
-          // for |u| > ~0.3 cs (cs ~ 0.577). Rescale rather than letting
-          // the macros blow up. With the corrected Allen-Cahn we can let
-          // this run closer to the real limit so real splashes survive.
+          // Mach-limit safety clamp. BGK is unstable above ~0.3 cs but
+          // we cap much lower because the voxelised sphere is a slightly
+          // asymmetric bounce-back surface and gives the body a tiny net
+          // force even at rest; without a tight cap that bias drives a
+          // positive-feedback fluid circulation that ends up carrying
+          // the ball around the box. UMAX = 0.12 still permits any
+          // realistic gravity-driven flow at these grid sizes.
           const u2 = uxn * uxn + uyn * uyn + uzn * uzn;
-          const UMAX = 0.28, UMAX2 = UMAX * UMAX;
+          const UMAX = 0.12, UMAX2 = UMAX * UMAX;
           if (u2 > UMAX2) {
             const s = UMAX / Math.sqrt(u2);
             uxn *= s; uyn *= s; uzn *= s;
