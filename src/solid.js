@@ -80,23 +80,21 @@ export class RigidSphere {
   }
 
   // ----------------------------------------------- dead cell sweep
-  // Cells that *just* became solid hand their fluid momentum to the body
-  // and are tagged solid by retagCells. We pick them up by scanning
-  // tag/tagPrev after step() and reading the previous ux/uy/uz from sim.
-  // The momentum is scaled by the cell's phase density so the body
-  // sweeps gas as light and water as heavy (matches the phase-weighted
-  // bounce-back impulse in streamHydroAndMacro).
+  // Cells that *just* became solid hand their fluid momentum to the
+  // body. With the variable-density LBM, fluid momentum at a cell is
+  // rho_phase * u, so the absorbed impulse uses rho_phase (real
+  // density) directly.
   absorbDeadCells(sim) {
-    const { nx, ny, nz, tag, tagPrev, ux, uy, uz, rho, phi, rhoL, rhoG } = sim;
+    const { nx, ny, nz, tag, tagPrev, ux, uy, uz, phi, rhoL, rhoG } = sim;
     const dRho = rhoL - rhoG;
     for (let z = 1; z < nz - 1; z++) {
       for (let y = 1; y < ny - 1; y++) {
         for (let x = 1; x < nx - 1; x++) {
           const i = ((z * ny) + y) * nx + x;
           if (tag[i] !== 1 || tagPrev[i] !== 0) continue;  // SOLID && was FLUID
-          const phaseWeight = rhoG + phi[i] * dRho;
-          const r = rho[i] * phaseWeight;
-          this.applyImpulseAtCell(x, y, z, r * ux[i], r * uy[i], r * uz[i]);
+          const rhoPhase = rhoG + phi[i] * dRho;
+          this.applyImpulseAtCell(x, y, z,
+            rhoPhase * ux[i], rhoPhase * uy[i], rhoPhase * uz[i]);
         }
       }
     }
@@ -171,21 +169,21 @@ export class RigidSphere {
     // slow background. Without explicit damping these compound and the
     // ball rattles around forever.
     //
-    // 15 % linear / 8 % angular damping per step. Strong enough to
-    // keep the body from overshooting through the (numerically wild)
-    // interface and slamming into the far wall, but the acceleration
-    // cap above lets gravity still reach terminal velocity ~0.04
-    // cells/step which reads as natural sink/rise speed.
-    const linDamp = 0.85;
-    const omegaDamp = 0.92;
+    // With the variable-density LBM giving real Archimedes buoyancy,
+    // the fluid itself provides drag via the bounce-back; we only need
+    // light damping to absorb residual numerical noise. 2 % linear /
+    // 5 % angular damping keeps terminal velocity Stokes-like
+    // (~0.03 cells/step for typical sink-rate) without smothering it.
+    const linDamp = 0.98;
+    const omegaDamp = 0.95;
     this.vx *= linDamp; this.vy *= linDamp; this.vz *= linDamp;
     this.wx *= omegaDamp; this.wy *= omegaDamp; this.wz *= omegaDamp;
 
-    // Snap to rest below the noise floor (~1 mcell/step) so the ball
-    // visually settles instead of jittering. Threshold is well below
-    // any gravity-driven terminal velocity above so real dynamics
-    // still come through.
-    const SNAP = 0.0008;
+    // Snap to rest below the noise floor. With the variable-density
+    // LBM the body's gravity-driven terminal velocity is ~ g / (1 -
+    // linDamp), small for moderate density mismatches; threshold has
+    // to be well below that so real motion isn't suppressed.
+    const SNAP = 0.0001;
     if (Math.abs(this.vx) < SNAP) this.vx = 0;
     if (Math.abs(this.vy) < SNAP) this.vy = 0;
     if (Math.abs(this.vz) < SNAP) this.vz = 0;

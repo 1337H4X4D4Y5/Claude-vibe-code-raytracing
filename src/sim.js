@@ -3,17 +3,19 @@
 // Reimplementation of Wei Li & Mathieu Desbrun, SIGGRAPH 2023:
 // "Fluid-Solid Coupling in Kinetic Two-Phase Flow Simulation".
 //
-// Architecture mirrors the paper:
-//   * D3Q27 BGK distribution f for velocity / pressure
+// Architecture:
+//   * D3Q27 distribution f for pressure / momentum (variable-density,
+//     HCZ-style: f_i^eq = w_i (p/cs^2 + rho_phase * Q_i(u)) so the
+//     sum-of-f tracks p/cs^2 while the first moment recovers
+//     rho_phase * u. This lets buoyancy be the real Archimedes form
+//     F_grav = rho_phase * g instead of the Boussinesq linearisation,
+//     so a body of density < rho_water actually floats at a
+//     proper equilibrium depth.)
 //   * D3Q7  Allen-Cahn distribution h for the conservative phase field
-//   * Forced collision for surface tension and gravity (Guo et al.)
-//   * Halfway bounce-back at fluid/solid links with the Ladd moving-wall
-//     correction; momentum exchange feeds the rigid body
-//   * Dead cells: fluid -> solid sweep transfers their momentum to the body
-//   * Fresh cells: solid -> fluid sweep are seeded with the body's velocity
-//     and a phase value averaged from fluid neighbours
-//
-// We keep things pure JS/CPU with TypedArrays; volume rendering is GPU.
+//   * Halfway bounce-back at fluid/solid links with the Ladd moving-
+//     wall correction, sized by the local rho_phase; momentum
+//     exchange feeds the rigid body
+//   * Dead/fresh cell handling at the moving body
 
 import {
   Q27, Q7,
@@ -131,30 +133,40 @@ export class Sim {
     this.seedHydrostatic();
   }
 
-  // Sets rho_LBM and the hydro distributions to satisfy the LBM
-  // hydrostatic equation with the current phi field:
-  //     d rho_LBM / d y = (rho_phase - rho_ref) * g / cs^2
-  // This is the Boussinesq form, matched to the body force in
-  // collideHydro. It gives only ((rho_phase - rho_ref) / rho_phase) of
-  // real Archimedes buoyancy (so a body needs slightly different
-  // density to float/sink than real-world numbers), but the smaller
-  // pressure gradient keeps the LBM well clear of its Mach limit and
-  // the body actually settles instead of being driven by fluid
-  // oscillations.
+  // Seed sum-f (the pressure proxy in our variable-density LBM) so
+  // that it satisfies the real Archimedes hydrostatic equation
+  //     d p / dy = rho_phase(y) * g
+  // i.e. d(sum f)/dy = rho_phase * g / cs^2. With u = 0 the HCZ
+  // equilibrium is just f_i = w_i * (sum f), so we initialise that.
+  // Starting the simulation in mechanical equilibrium kills the
+  // gravity transient that otherwise rings around for hundreds of
+  // steps and shakes the body.
   seedHydrostatic() {
     const { nx, ny, nz, phi, rho, f } = this;
-    const rhoRef = 0.5 * (this.rhoL + this.rhoG);
+    const dRho = this.rhoL - this.rhoG;
     const gOverCs2 = this.gravity * INV_CS2_27;
+    // Equilibrium "lattice velocity" for the Guo scheme at static
+    // hydrostatic: u_lat = -0.5 * F / rho_phase = -0.5 * g (y comp.).
+    // The macroscopic velocity u = u_lat + 0.5 F/rho_phase = 0. Without
+    // this small offset, the LBM has an O(g) initial transient that
+    // grows into a spurious body force on any submerged solid.
+    const uLatY = -0.5 * this.gravity;
+    const eu_uy_lat = INV_CS2_27 * uLatY;
+    const uLat2 = uLatY * uLatY;
     for (let z = 0; z < nz; z++) {
       for (let x = 0; x < nx; x++) {
-        let r = 1.0;
+        let pCs2 = 1.0;
         for (let y = 0; y < ny; y++) {
           const i = this.idx(x, y, z);
-          rho[i] = r;
+          rho[i] = pCs2;
           const i27 = i * Q27;
-          for (let k = 0; k < Q27; k++) f[i27 + k] = W27[k] * r;
-          const rhoPhi = this.rhoG + phi[i] * (this.rhoL - this.rhoG);
-          r += (rhoPhi - rhoRef) * gOverCs2;
+          const rhoPhase = this.rhoG + phi[i] * dRho;
+          for (let k = 0; k < Q27; k++) {
+            const eu = EY27[k] * uLatY;
+            const Qi = eu * (INV_CS2_27 + INV_2CS4_27 * eu) - 1.5 * uLat2;
+            f[i27 + k] = W27[k] * (pCs2 + rhoPhase * Qi);
+          }
+          pCs2 += rhoPhase * gOverCs2;
         }
       }
     }
@@ -269,6 +281,9 @@ export class Sim {
             }
           }
           const p = pcnt > 0 ? psum / pcnt : phiPrev[i];
+          // r averages the LBM pressure proxy (sum f) from neighbours
+          // -- not a uniform 1.0, since pressure varies with depth in
+          // the variable-density LBM.
           const r = pcnt > 0 ? rsum / pcnt : 1.0;
           const vx = pcnt > 0 ? vxs / pcnt : 0;
           const vy = pcnt > 0 ? vys / pcnt : 0;
@@ -277,11 +292,13 @@ export class Sim {
           rho[i] = r;
           ux[i] = vx; uy[i] = vy; uz[i] = vz;
 
+          const rhoPhase = this.rhoG + p * (this.rhoL - this.rhoG);
           const u2 = vx * vx + vy * vy + vz * vz;
+          // HCZ equilibrium populations: w_i (sum f + rho_phase Q_i(u)).
           for (let k = 0; k < Q27; k++) {
             const eu = EX27[k] * vx + EY27[k] * vy + EZ27[k] * vz;
-            f[i * Q27 + k] = W27[k] * r *
-              (1 + INV_CS2_27 * eu + INV_2CS4_27 * eu * eu - 1.5 * u2);
+            const Qi = eu * (INV_CS2_27 + INV_2CS4_27 * eu) - 1.5 * u2;
+            f[i * Q27 + k] = W27[k] * (r + rhoPhase * Qi);
           }
           for (let k = 0; k < Q7; k++) {
             const eu = EX7[k] * vx + EY7[k] * vy + EZ7[k] * vz;
@@ -380,22 +397,20 @@ export class Sim {
   }
 
   // -------------------------------------------------------- hydro collide
-  // BGK collision with Guo forcing. Forces:
-  //   F_grav  = (rho(phi) - rho_ref) * g_vec
-  //   F_st    = mu(phi) * grad(phi),
-  //     mu = 4 beta phi (phi-1)(2 phi - 1) - kappa * Lap(phi)
-  // Coefficients beta, kappa picked to recover surface tension sigma at
-  // interface thickness W (Liang et al.):
-  //   beta  = 12 sigma / W
-  //   kappa = 1.5 sigma * W
+  // Variable-density (HCZ) BGK collision with Guo forcing. The
+  // equilibrium f_i^eq = w_i (p/cs^2 + rho_phase * Q_i(u)) decouples
+  // pressure from density: sum f = p/cs^2 and sum e_i f = rho_phase * u.
+  // Body force is the real Archimedes form rho_phase * g, so a body of
+  // density rho_solid feels (rho_solid - rho_phase) V g net.
+  //   beta  = 12 sigma / W,  kappa = 1.5 sigma W
   collideHydro() {
     const { nx, ny, nz, f, f2, rho, ux, uy, uz, phi, tag,
             tau, sigma, gravity, rhoL, rhoG, W,
             gx, gy, gz, lap, bodyFx, bodyFy, bodyFz } = this;
     const invTau = 1 / tau;
-    const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
+    const dRho = rhoL - rhoG;
     // Guo source term constant: S_k = A * w_k * (ekF * (1 + eu/cs^2) - uF)
     // where A = (1 - 0.5/tau) / cs^2.
     const A = (1 - 0.5 * invTau) * INV_CS2_27;
@@ -410,27 +425,34 @@ export class Sim {
           if (tag[i] !== TAG_FLUID) continue;
           const i27 = i * Q27;
 
-          const r = rho[i];
+          // sumF = p/cs^2 (LBM pressure proxy), rhoPhase = actual
+          // fluid density from phi.
+          const sumF = rho[i];
           const p = phi[i];
+          const rhoPhase = rhoG + p * dRho;
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
-          const rhoPhi = rhoG + p * (rhoL - rhoG);
           const fx = bodyFx[i] + mu * gx[i];
-          const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
+          const fy = bodyFy[i] + mu * gy[i] + rhoPhase * gravity;
           const fz = bodyFz[i] + mu * gz[i];
 
-          const halfR = 0.5 / r;
-          const uxe = ux[i] + fx * halfR;
-          const uye = uy[i] + fy * halfR;
-          const uze = uz[i] + fz * halfR;
+          // The macroscopic velocity ux[i] is already Guo-corrected
+          // (stored as (sum e f + 0.5 F) / rho_phase at the end of the
+          // previous step's macro update), so feq is computed with it
+          // directly. Adding another 0.5 F/rho here would double-apply
+          // the correction.
+          const uxe = ux[i];
+          const uye = uy[i];
+          const uze = uz[i];
           const u2  = uxe * uxe + uye * uye + uze * uze;
-          const oneMinusU2half = 1 - 1.5 * u2;
+          const negU2half = -1.5 * u2;
           const uF = uxe * fx + uye * fy + uze * fz;
 
           for (let k = 0; k < Q27; k++) {
             const ekx = EX27[k], eky = EY27[k], ekz = EZ27[k];
             const wk = W27[k];
             const eu = ekx * uxe + eky * uye + ekz * uze;
-            const feq = wk * r * (oneMinusU2half + eu * (INV_CS2_27 + INV_2CS4_27 * eu));
+            const Qi = negU2half + eu * (INV_CS2_27 + INV_2CS4_27 * eu);
+            const feq = wk * (sumF + rhoPhase * Qi);
             const ekF = ekx * fx + eky * fy + ekz * fz;
             const Sk  = A * wk * (ekF * (1 + INV_CS2_27 * eu) - uF);
             const fk = f[i27 + k];
@@ -465,7 +487,6 @@ export class Sim {
             gx, gy, gz, lap, bodyFx, bodyFy, bodyFz,
             neighOffset27, fOffset27 } = this;
     const nxny = nx * ny;
-    const rhoRef = 0.5 * (rhoL + rhoG);
     const beta  = 12 * sigma / W;
     const kappa = 1.5 * sigma * W;
     const dRho = rhoL - rhoG;
@@ -478,9 +499,12 @@ export class Sim {
           const i = yzBase + x;
           if (tag[i] !== TAG_FLUID) continue;
           const i27 = i * Q27;
-          const rhoOld = rho[i];
+          // Use the rho_phase the cell HAD at the start of the step
+          // (consistent with the pre-stream collide). phi gets
+          // updated below.
+          const rhoPhaseOld = rhoG + phi[i] * dRho;
 
-          let r = 0, mx = 0, my = 0, mz = 0;
+          let pSumF = 0, mx = 0, my = 0, mz = 0;
 
           for (let k = 0; k < Q27; k++) {
             const sIdx = i + neighOffset27[k];
@@ -491,63 +515,60 @@ export class Sim {
             if (sTag === TAG_FLUID) {
               fk = f2[i27 + fOffset27[k]];
             } else {
-              // Bounce-back. fopp = what we pushed toward the obstacle.
+              // Halfway bounce-back with moving-wall correction sized by
+              // the local PHASE density (not the LBM pressure proxy).
               const fopp = f2[i27 + OPP27[k]];
               let corr = 0;
               if (sTag === TAG_SOLID) {
                 const eu = ekx * usx[sIdx] + eky * usy[sIdx] + ekz * usz[sIdx];
-                corr = 2 * W27[k] * rhoOld * eu * INV_CS2_27;
+                corr = 2 * W27[k] * rhoPhaseOld * eu * INV_CS2_27;
               }
               fk = fopp + corr;
               if (sTag === TAG_SOLID && solid) {
-                // Scale impulse on the body by local phase density to
-                // recover something like the real mass ratio between
-                // gas and water (Boussinesq LBM has rho_LBM ~= 1 in
-                // both, which makes the body feel gas with too much
-                // inertia).
-                const phaseWeight = rhoG + phi[i] * dRho;
-                const wm = (fopp + fk) * phaseWeight;
+                // Momentum exchange: f populations already carry
+                // rho_phase via the variable-density equilibrium, so
+                // the impulse needs no extra phase scaling -- a body
+                // in gas naturally feels ~rho_G fraction of the force
+                // a body in water feels.
+                const m = fopp + fk;
                 const sx = x - ekx, sy = y - eky, sz = z - ekz;
-                solid.applyImpulseAtCell(sx, sy, sz, -wm * ekx, -wm * eky, -wm * ekz);
+                solid.applyImpulseAtCell(sx, sy, sz, -m * ekx, -m * eky, -m * ekz);
               }
             }
             f[i27 + k] = fk;
-            r  += fk;
+            pSumF += fk;
             mx += ekx * fk;
             my += eky * fk;
             mz += ekz * fk;
           }
 
-          const rNew = r > 1e-6 ? r : 1e-6;
-          rho[i] = rNew;
+          // Store sum f as the new pressure proxy.
+          rho[i] = pSumF > 0.01 ? pSumF : 0.01;
 
-          // Update phi from the freshly-streamed h moments. We do this
-          // here rather than in streamPhase so that collideHydro saw the
-          // pre-stream phi (consistent with the precomputed grad/lap).
-          let pSum = 0;
-          for (let k = 0; k < Q7; k++) pSum += h[i * Q7 + k];
-          const p = pSum < 0 ? 0 : pSum > 1 ? 1 : pSum;
+          // Update phi from the freshly-streamed h moments.
+          let phiSum = 0;
+          for (let k = 0; k < Q7; k++) phiSum += h[i * Q7 + k];
+          const p = phiSum < 0 ? 0 : phiSum > 1 ? 1 : phiSum;
           phi[i] = p;
 
+          // Velocity from momentum / rho_phase. Use the NEW phi so the
+          // velocity is consistent with the up-to-date density.
+          const rhoPhaseNew = rhoG + p * dRho;
           const mu = 4 * beta * p * (p - 1) * (2 * p - 1) - kappa * lap[i];
-          const rhoPhi = rhoG + p * (rhoL - rhoG);
           const fx = bodyFx[i] + mu * gx[i];
-          const fy = bodyFy[i] + mu * gy[i] + (rhoPhi - rhoRef) * gravity;
+          const fy = bodyFy[i] + mu * gy[i] + rhoPhaseNew * gravity;
           const fz = bodyFz[i] + mu * gz[i];
-          const invR = 1 / rNew;
-          let uxn = (mx + 0.5 * fx) * invR;
-          let uyn = (my + 0.5 * fy) * invR;
-          let uzn = (mz + 0.5 * fz) * invR;
+          const invRho = 1 / rhoPhaseNew;
+          let uxn = (mx + 0.5 * fx) * invRho;
+          let uyn = (my + 0.5 * fy) * invRho;
+          let uzn = (mz + 0.5 * fz) * invRho;
 
-          // Mach-limit safety clamp. BGK is unstable above ~0.3 cs but
-          // we cap much lower because the voxelised sphere is a slightly
-          // asymmetric bounce-back surface and gives the body a tiny net
-          // force even at rest; without a tight cap that bias drives a
-          // positive-feedback fluid circulation that ends up carrying
-          // the ball around the box. UMAX = 0.12 still permits any
-          // realistic gravity-driven flow at these grid sizes.
+          // Mach-limit safety clamp. The variable-density LBM lets
+          // gas-side velocities run higher for the same momentum
+          // (light), so we keep this slightly higher than the previous
+          // 0.12 but still well clear of the BGK Mach limit.
           const u2 = uxn * uxn + uyn * uyn + uzn * uzn;
-          const UMAX = 0.12, UMAX2 = UMAX * UMAX;
+          const UMAX = 0.2, UMAX2 = UMAX * UMAX;
           if (u2 > UMAX2) {
             const s = UMAX / Math.sqrt(u2);
             uxn *= s; uyn *= s; uzn *= s;

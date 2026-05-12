@@ -22,11 +22,12 @@ function getBuffer() {
 
 function initSim() {
   sim = new Sim(NX, NY, NZ);
-  // Boussinesq body force in the fluid LBM gives an effective sink/
-  // float threshold of rho_ref = 0.5*(rho_L + rho_G) = 0.55, NOT real
-  // water 1.0. Preset densities are picked around 0.55, so 0.3 floats
-  // clearly and 1.4 sinks clearly.
-  sim.tau     = 0.8;
+  // Variable-density (HCZ-style) LBM: body force is the real
+  // Archimedes form rho_phase * g, so densities are now relative to
+  // real water (rho_L = 1.0). A body of density < 1.0 actually
+  // floats, > 1.0 sinks. Sphere can now reach a proper floating
+  // equilibrium at the surface instead of slamming into a wall.
+  sim.tau     = 0.85;
   sim.tauPhi  = 0.7;
   sim.sigma   = 0.008;
   sim.gravity = 0.0015;
@@ -42,19 +43,13 @@ function initSim() {
 function resetTo(name) {
   switch (name) {
     case 'drop':
-      // Sphere starts submerged, at least 10 cells below the
-      // interface. The Allen-Cahn interface has strong residual
-      // stresses that bias bounce-back forces on a nearby body --
-      // measured as 40x the Boussinesq buoyancy 3 cells from the
-      // interface, dropping to ~1.2x at 10 cells. We pick a depth
-      // (cy=18) where the bias is small enough that real gravity
-      // dominates.
+      // Heavy ball (density > water 1.0) in water. Sinks to the floor.
       sim.initFlat(NY * 0.25);
-      solid.cx = NX * 0.5; solid.cy = NY * 0.65; solid.cz = NZ * 0.5;
+      solid.cx = NX * 0.5; solid.cy = NY * 0.35; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
       solid.setRadius(4.0);
-      solid.setDensity(1.4);
+      solid.setDensity(2.0);
       break;
     case 'dam': {
       const { nx, ny, nz } = sim;
@@ -85,13 +80,13 @@ function resetTo(name) {
     }
     case 'rise':
       sim.initFlat(NY * 0.25);
-      // Boussinesq effective sink/float threshold is rho_ref = 0.55.
-      // Density 0.3 (well below threshold) gives a clear, stable rise.
+      // Buoyant ball (density < water 1.0). With real Archimedes it
+      // rises and settles partially submerged at the surface.
       solid.cx = NX * 0.5; solid.cy = NY * 0.65; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
       solid.setRadius(4.0);
-      solid.setDensity(0.3);
+      solid.setDensity(0.5);
       break;
   }
 }
