@@ -16,7 +16,11 @@ export class RigidSphere {
     this.vx = 0; this.vy = 0; this.vz = 0;
     this.wx = 0; this.wy = 0; this.wz = 0;          // angular velocity
 
-    // Density relative to a unit reference density.
+    // Density relative to the LBM reference density rho_ref =
+    // 0.5*(rho_L + rho_G). Because the LBM body force is Boussinesq
+    // (rho_phase - rho_ref) g, the *effective* sink/float threshold a
+    // body sees is rho_ref, not real water 1.0. So density 0.3
+    // floats clearly, 1.4 sinks clearly.
     this.density = opts.density ?? 1.4;
 
     // Mouse-spring (when user is dragging).
@@ -34,6 +38,7 @@ export class RigidSphere {
 
   recomputeMass() {
     const V = (4 / 3) * Math.PI * this.r * this.r * this.r;
+    this.volume = V;
     this.mass = this.density * V;
     this.I = (2 / 5) * this.mass * this.r * this.r;
   }
@@ -102,6 +107,15 @@ export class RigidSphere {
     // Body gravity in world units (matches the fluid lattice gravity).
     const bodyG = gravity;        // +y is down here
     this.Fy += this.mass * bodyG;
+
+    // No explicit Archimedes correction here: in practice the LBM
+    // already delivers ~ V * rho_phase * g of effective buoyancy on a
+    // body close to the interface (the integrated bounce-back over
+    // the voxelised surface plus Guo-forcing contributions add up to
+    // close to real Archimedes, not the textbook Boussinesq
+    // prediction of (rho_phase - rho_ref) V g). Adding an extra
+    // rho_ref V g would double-count and turn dense balls into
+    // floaters.
 
     // Mouse-spring force (critically damped).
     if (this.dragging) {

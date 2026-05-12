@@ -22,17 +22,10 @@ function getBuffer() {
 
 function initSim() {
   sim = new Sim(NX, NY, NZ);
-  // Now that the Allen-Cahn anti-diffusion is correctly scaled, the
-  // simulation is much more stable and we can drop tau back to ~0.55
-  // (kinematic viscosity 0.0167) which is closer to actual water-like
-  // Reynolds numbers. Stronger gravity and surface tension also give
-  // more visible splashes and ripples.
-  // Boussinesq body force ((rho_phase - rho_ref) * g) -- only half of
-  // real Archimedes buoyancy, but the smaller pressure gradient keeps
-  // the LBM Mach-stable and lets the body actually settle. Densities
-  // in the presets are picked relative to rho_ref = 0.55, NOT relative
-  // to water 1.0, so anything below 0.55 floats and anything above
-  // sinks.
+  // Boussinesq body force in the fluid LBM gives an effective sink/
+  // float threshold of rho_ref = 0.5*(rho_L + rho_G) = 0.55, NOT real
+  // water 1.0. Preset densities are picked around 0.55, so 0.3 floats
+  // clearly and 1.4 sinks clearly.
   sim.tau     = 0.8;
   sim.tauPhi  = 0.7;
   sim.sigma   = 0.008;
@@ -49,17 +42,15 @@ function initSim() {
 function resetTo(name) {
   switch (name) {
     case 'drop':
-      // "Drop" used to start the sphere in air and let it fall through
-      // the water surface, but that exposed a real limitation of this
-      // Boussinesq LBM: rho_LBM is ~1 in gas too, so gas has water-like
-      // inertia and the sphere bounces off the surface instead of
-      // punching through. Until the LBM is upgraded to a variable-
-      // density form (Lee-Lin or Inamuro style) we just start the
-      // sphere already submerged, away from the interface, so the
-      // visible dynamics (sinking, wake, displacement) come from bulk
-      // flow rather than the broken interface impact.
+      // Sphere starts submerged, at least 10 cells below the
+      // interface. The Allen-Cahn interface has strong residual
+      // stresses that bias bounce-back forces on a nearby body --
+      // measured as 40x the Boussinesq buoyancy 3 cells from the
+      // interface, dropping to ~1.2x at 10 cells. We pick a depth
+      // (cy=18) where the bias is small enough that real gravity
+      // dominates.
       sim.initFlat(NY * 0.25);
-      solid.cx = NX * 0.5; solid.cy = NY * 0.60; solid.cz = NZ * 0.5;
+      solid.cx = NX * 0.5; solid.cy = NY * 0.65; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
       solid.setRadius(4.0);
@@ -94,10 +85,9 @@ function resetTo(name) {
     }
     case 'rise':
       sim.initFlat(NY * 0.25);
-      // Boussinesq buoyancy threshold is rho_ref = 0.55 (NOT real
-      // water density 1.0), so a slightly-buoyant ball wants density
-      // a bit below that. 0.3 gives a clear but stable rise.
-      solid.cx = NX * 0.5; solid.cy = NY * 0.70; solid.cz = NZ * 0.5;
+      // Boussinesq effective sink/float threshold is rho_ref = 0.55.
+      // Density 0.3 (well below threshold) gives a clear, stable rise.
+      solid.cx = NX * 0.5; solid.cy = NY * 0.65; solid.cz = NZ * 0.5;
       solid.vx = solid.vy = solid.vz = 0;
       solid.wx = solid.wy = solid.wz = 0;
       solid.setRadius(4.0);

@@ -47,7 +47,7 @@ function runScene(name, setup) {
 
 runScene('drop', (sim, solid, NX, NY, NZ) => {
   sim.initFlat(NY * 0.25);
-  solid.cx = NX * 0.5; solid.cy = NY * 0.60; solid.cz = NZ * 0.5;
+  solid.cx = NX * 0.5; solid.cy = NY * 0.65; solid.cz = NZ * 0.5;
   solid.setRadius(4.0); solid.setDensity(1.4);
 });
 
@@ -72,6 +72,6 @@ runScene('dam', (sim, solid, NX, NY, NZ) => {
 
 runScene('rise', (sim, solid, NX, NY, NZ) => {
   sim.initFlat(NY * 0.25);
-  solid.cx = NX * 0.5; solid.cy = NY * 0.70; solid.cz = NZ * 0.5;
+  solid.cx = NX * 0.5; solid.cy = NY * 0.65; solid.cz = NZ * 0.5;
   solid.setRadius(4.0); solid.setDensity(0.3);
 });
