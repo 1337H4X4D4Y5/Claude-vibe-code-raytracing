@@ -117,22 +117,53 @@ export class RigidSphere {
     // rho_ref V g would double-count and turn dense balls into
     // floaters.
 
-    // Mouse-spring force (critically damped).
+    // Mouse-spring force (critically damped). Stiffness deliberately
+    // gentle: the body's surface velocity feeds into the bounce-back's
+    // moving-wall correction (~ 2 w rho (e.u_w)/cs^2 per link), and
+    // u_w much above ~0.1 cs blows the LBM up. Soft k + the velocity
+    // cap below keeps user drags inside the stable envelope.
     if (this.dragging) {
-      const k  = 0.08 * this.mass;
+      const k  = 0.004 * this.mass;
       const cD = 2.0 * Math.sqrt(k * this.mass);
       this.Fx += k * (this.dragTargetX - this.cx) - cD * this.vx;
       this.Fy += k * (this.dragTargetY - this.cy) - cD * this.vy;
       this.Fz += k * (this.dragTargetZ - this.cz) - cD * this.vz;
     }
 
-    // Linear + angular update.
-    this.vx += dt * this.Fx / this.mass;
-    this.vy += dt * this.Fy / this.mass;
-    this.vz += dt * this.Fz / this.mass;
+    // Linear + angular update with an acceleration cap. Bounding the
+    // PER-STEP momentum change to a few gravities prevents two things
+    // at once:
+    //  (a) the LBM near the interface delivering 40x its theoretical
+    //      buoyancy from voxelisation-driven instabilities;
+    //  (b) the drag spring or a fast mouse motion injecting body
+    //      velocity well past the fluid-Mach-stable u_w ~ 0.1.
+    // Real fluid dynamics rarely exceed ~3g instantaneous accel, so
+    // clipping there is generous for everything physical and just
+    // sheds the spurious LBM spikes.
+    const accCap = 3.5 * Math.abs(gravity || 0.001);
+    {
+      const ax = this.Fx / this.mass;
+      const ay = this.Fy / this.mass;
+      const az = this.Fz / this.mass;
+      const a2 = ax * ax + ay * ay + az * az;
+      const c2 = accCap * accCap;
+      const s = a2 > c2 ? accCap / Math.sqrt(a2) : 1.0;
+      this.vx += dt * ax * s;
+      this.vy += dt * ay * s;
+      this.vz += dt * az * s;
+    }
     this.wx += dt * this.Tx / this.I;
     this.wy += dt * this.Ty / this.I;
     this.wz += dt * this.Tz / this.I;
+
+    // Body Mach cap, as a final safety so a long-lasting one-sided
+    // force can't accumulate past LBM stability.
+    const BODY_UMAX = 0.08;
+    const sp2 = this.vx * this.vx + this.vy * this.vy + this.vz * this.vz;
+    if (sp2 > BODY_UMAX * BODY_UMAX) {
+      const s = BODY_UMAX / Math.sqrt(sp2);
+      this.vx *= s; this.vy *= s; this.vz *= s;
+    }
 
     // Damping. The voxelised sphere is a non-spherical bounce-back
     // surface so even an at-rest fluid gives the body a tiny biased
